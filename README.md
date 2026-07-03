@@ -14,6 +14,14 @@
   <img src="https://img.shields.io/badge/OS-FreeRTOS-blue?style=for-the-badge" alt="FreeRTOS" />
 </p>
 
+```text
+██████  ██████  ██████  ██████  ██████  ██████  ██  ██          ██████  ██  ██  ██████  ██████  ██████  
+██      ██      ██  ██      ██      ██  ██  ██  ██  ██          ██      ███ ██  ██  ██  ██      ██      
+██████  ██████  ██████  ██████  ██████  ██████  ██████  ██████  ██████  ██████  ██  ██  ██████  ██████  
+██          ██  ██          ██  ██      ██          ██          ██      ██ ███  ██  ██      ██  ██      
+██████  ██████  ██      ██████  ██████  ██          ██          ██████  ██  ██  ██████  ██████  ██████  
+```
+
 ---
 
 ## 🌟 项目简介 (Project Overview)
@@ -81,6 +89,22 @@ graph TD
 ### 4. 🎛️ 闭环控制与大模型融合 (Smart Actuators & LLM Gateway)
 *   **物理换气与消毒**：当本地推理新鲜度低于安全阈值 (`< 60%`)，S3 节点自动触发继电器点亮 UV 紫外线消毒灯，开启排气风扇并驱动舵机打开舱门通风。
 *   **豆包 AI 空气管家**：P4 主控聚合传感器数据后，通过 HTTPS POST 直接与**火山引擎 AI Gateway** 握手，根据专业嗅觉专家提示词，实时输出多维健康评估与空气改善建议。
+
+---
+
+## 📷 系统硬件展示 (System Hardware Gallery)
+
+<p align="center">
+  <img src="docs/images/hardware_annotated.jpg" width="90%" alt="Hardware Annotations Map" /><br/>
+  <em>智能嗅觉电子鼻网关系统实物引脚与接口标注图 (Annotated Hardware Map)</em>
+</p>
+
+<br/>
+
+<p align="center">
+  <img src="docs/images/blueprint_sketch.jpg" width="90%" alt="Blueprint Design Sketch" /><br/>
+  <em>三维机壳设计与芯片互联图纸 (Blueprint Schematic Sketch)</em>
+</p>
 
 ---
 
