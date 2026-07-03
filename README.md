@@ -1,3 +1,6 @@
+<img width="1705" height="1280" alt="99f376f1d95ac5459122999e7ca80613" src="https://github.com/user-attachments/assets/2efafbee-765c-44db-959a-1de07c7a55ef" />
+<img width="896" height="1197" alt="370fb3d9d205a7d9dd52370862cc3d1c" src="https://github.com/user-attachments/assets/09956060-aa72-44b8-9e44-855b9e1ff23f" />
+
 # ESP32-P4 电子鼻网关 (E-Nose Gateway)
 
 基于 ESP32-P4 的高性能空气质量监测系统，通过 ESP-NOW + UART 桥接采集多节点传感器数据，实现本地可视化、云端同步与远程控制。
