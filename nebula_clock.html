@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-P4 🌌 3D 赛博粒子星云时钟系统</title>
+    
+    <!-- Three.js Library & Tailwind CSS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body {
+            margin: 0;
+            background-color: #040508;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            cursor: pointer;
+        }
+        #ui-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .hud-panel {
+            position: absolute;
+            background: rgba(8, 10, 16, 0.85);
+            border: 1px solid rgba(255, 106, 0, 0.2);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            padding: 20px;
+            color: #ff6a00;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(255, 106, 0, 0.1);
+            pointer-events: auto;
+        }
+        .hud-panel-blue {
+            color: #00f0ff;
+            border-color: rgba(0, 240, 255, 0.2);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.1);
+        }
+        .glitch-text {
+            animation: glitch 2.5s infinite alternate-reverse;
+            text-shadow: 0 0 12px rgba(255, 106, 0, 0.6);
+        }
+        .glitch-text-blue {
+            text-shadow: 0 0 12px rgba(0, 240, 255, 0.6);
+        }
+        @keyframes glitch {
+            0% { text-shadow: 2px 0 rgba(255,0,255,0.4), -2px 0 rgba(0,240,255,0.4); transform: skew(0deg); }
+            50% { text-shadow: -2px 0 rgba(255,0,255,0.4), 2px 0 rgba(0,240,255,0.4); transform: skew(0deg); }
+        }
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #040508;
+            z-index: 50;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: var(--primary);
+            transition: opacity 0.8s ease;
+            pointer-events: none;
+        }
+        .btn-control {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 106, 0, 0.25);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 700;
+            transition: all 0.3s;
+            text-align: center;
+        }
+        .btn-control:hover {
+            background: #ff6a00;
+            border-color: #ff6a00;
+            color: white;
+            box-shadow: 0 0 10px rgba(255, 106, 0, 0.4);
+        }
+        .btn-control.active {
+            background: #ff6a00;
+            border-color: #ff6a00;
+            color: white;
+            box-shadow: 0 0 12px rgba(255, 106, 0, 0.5);
+        }
+        .btn-control-blue {
+            border-color: rgba(0, 240, 255, 0.25);
+        }
+        .btn-control-blue:hover, .btn-control-blue.active {
+            background: #00f0ff;
+            border-color: #00f0ff;
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Overlay -->
+    <div id="loading-screen" class="loading-overlay">
+        <div class="text-center">
+            <div class="text-2xl font-black tracking-widest text-orange-500 animate-pulse">ORION COGNITIVE GLOW</div>
+            <div class="text-xs mt-2 text-orange-800">LOADING 3D GLOW PARTICLE SYSTEM...</div>
+        </div>
+    </div>
+
+    <!-- UI Overlay Layer -->
+    <div id="ui-layer">
+        <!-- TOP DATE/CLOCK DISPLAY -->
+        <div class="absolute top-8 left-1/2 transform -translate-x-1/2 text-center w-full">
+            <div id="calendar-date" class="text-[12px] text-orange-500 tracking-[0.6em] mb-2 uppercase animate-pulse">JUNE 28, 2026</div>
+            <div id="clock-display" class="text-7xl font-black text-white glitch-text tracking-widest leading-none">00:00:00</div>
+            <div class="flex justify-center gap-4 mt-4 text-[10px] text-orange-600 font-bold tracking-widest">
+                <span>SYSTEM: <span class="text-white">ESP32-P4 COGNITIVE LINK</span></span>
+                <span>//</span>
+                <span>HMI_STATUS: <span class="text-green-400">ONLINE</span></span>
+            </div>
+        </div>
+
+        <!-- LEFT SIDEBAR: HUD SETTINGS -->
+        <div class="hud-panel top-1/2 left-8 transform -translate-y-1/2 w-72" id="hud-panel-left">
+            <div class="flex justify-between items-center border-b border-orange-500/30 pb-2 mb-3">
+                <h3 class="text-xs font-bold tracking-widest flex items-center gap-2">
+                    <i class="fa-solid fa-gauge-high"></i> COGNITIVE HUD v3.0
+                </h3>
+                <div id="status-dot" class="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></div>
+            </div>
+            
+            <div class="text-[10px] space-y-3 font-mono">
+                <!-- Live Coords -->
+                <div class="flex justify-between items-center"><span class="text-orange-900 font-bold">CURSOR_3D_X</span><span id="cursor-x" class="text-white">0.00</span></div>
+                <div class="flex justify-between items-center"><span class="text-orange-900 font-bold">CURSOR_3D_Y</span><span id="cursor-y" class="text-white">0.00</span></div>
+                <div class="flex justify-between items-center"><span class="text-orange-900 font-bold">PARTICLE_QTY</span><span class="text-white">30,000</span></div>
+                
+                <!-- State Indicators -->
+                <div class="mt-3 p-2.5 bg-orange-900/10 border border-orange-500/20 rounded">
+                    <span class="text-orange-600 block mb-1 text-[8px] tracking-widest font-bold">ACTIVE FORCE FIELD</span>
+                    <span id="force-mode" class="text-sm font-bold text-white block tracking-wider">ORBITAL STANDBY (IDLE)</span>
+                </div>
+
+                <!-- Shape Selector -->
+                <div class="space-y-1.5 pt-2 border-t border-orange-500/20">
+                    <span class="text-orange-600 block mb-1 text-[8px] tracking-widest font-bold">MORPHING STATE</span>
+                    <div class="grid grid-cols-3 gap-1.5">
+                        <button class="btn-control active" id="btn-shape-clock">时钟模式</button>
+                        <button class="btn-control" id="btn-shape-logo">P4标识</button>
+                        <button class="btn-control" id="btn-shape-galaxy">星云星系</button>
+                    </div>
+                </div>
+
+                <!-- Color Schemes -->
+                <div class="space-y-1.5 pt-2">
+                    <span class="text-orange-600 block mb-1 text-[8px] tracking-widest font-bold">NEBULA SPECTRUM</span>
+                    <div class="grid grid-cols-3 gap-1.5">
+                        <button class="btn-control active" id="btn-color-orion">太阳橙</button>
+                        <button class="btn-control" id="btn-color-cyber">赛博粉</button>
+                        <button class="btn-control" id="btn-color-matrix">黑客绿</button>
+                    </div>
+                </div>
+
+                <!-- Controls Guide -->
+                <div class="text-[9px] text-gray-500 pt-2 border-t border-gray-800 space-y-1">
+                    <div class="text-white font-bold mb-1">交互手势指南 (鼠标):</div>
+                    <div>• 鼠标悬浮: <strong>NOVA BURST</strong> (斥力场排斥)</div>
+                    <div>• 鼠标按住: <strong>GRAVITY WELL</strong> (引力井聚拢)</div>
+                    <div>• 鼠标滚轮: <strong>ZOOM DISTANCE</strong> (调整镜头焦距)</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT HUD PANEL (STATS) -->
+        <div class="hud-panel top-1/2 right-8 transform -translate-y-1/2 w-48 text-[10px] space-y-2 font-mono" id="hud-panel-right">
+            <div class="border-b border-orange-500/30 pb-1.5 mb-2 font-bold tracking-widest">性能监测</div>
+            <div class="flex justify-between"><span class="text-orange-950">FPS</span><span id="fps-counter" class="text-white">60</span></div>
+            <div class="flex justify-between"><span class="text-orange-950">DAMPING</span><span class="text-white">0.93</span></div>
+            <div class="flex justify-between"><span class="text-orange-950">RETURN_V</span><span id="return-speed" class="text-white">0.05</span></div>
+            <div class="flex justify-between"><span class="text-orange-950">ZOOM_Z</span><span id="zoom-z" class="text-white">50.0</span></div>
+            <div class="mt-3 text-[8px] text-center text-orange-800 border-t border-orange-500/10 pt-2">
+                PROJECT ORION DISPLAY NODE
+            </div>
+        </div>
+    </div>
+
+    <!-- WebGL Rendering Logic -->
+    <script>
+        // --- Configuration Parameters ---
+        const CONFIG = {
+            particleCount: 30000, // Large high-density particle swarm
+            returnSpeedIdle: 0.05,
+            returnSpeedInteract: 0.02
+        };
+
+        let scene, camera, renderer, particles, particleGeo;
+        let targetPositions = [];
+        let velocities = [];
+        let colors = [];
+        
+        let cursor3D = new THREE.Vector3(0, 0, 0);
+        let targetCursor3D = new THREE.Vector3(0, 0, 0);
+        
+        let forceFieldMode = 'PALM'; // Default to hover repulsion
+        let currentMode = 'CLOCK'; // Active shape
+        let currentPalette = 'ORION'; // Active colors
+        
+        let currentMinute = -1;
+        let isSystemReady = false;
+
+        const CANVAS_WIDTH = 640;
+        const CANVAS_HEIGHT = 200;
+
+        // Mouse projection utilities
+        const raycaster = new THREE.Raycaster();
+        const mouse2D = new THREE.Vector2();
+        const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0); // Flat intersection plane at Z=0
+        let mouseInScreen = false;
+
+        // Color Palette Maps
+        const palettes = {
+            ORION: {
+                primary: 0xff6a00, // Orion Solar Orange
+                secondary: 0x00f0ff, // Cyan accent
+                ratio: 0.85
+            },
+            CYBER: {
+                primary: 0x00ffff, // Cyberpunk Cyan
+                secondary: 0xff00ff, // Pink accent
+                ratio: 0.75
+            },
+            MATRIX: {
+                primary: 0x00ff66, // Matrix Hacker Green
+                secondary: 0xffffff, // Pure white sparks
+                ratio: 0.90
+            }
+        };
+
+        // Create glowing radial canvas texture
+        function createGlowTexture(primaryColor, secondaryColor) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            grad.addColorStop(0.3, secondaryColor || 'rgba(0, 240, 255, 0.6)');
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // Rasterize text to coordinates
+        function generateTextPositions(text, fontSize = 110) {
+            const canvas = document.createElement('canvas');
+            canvas.width = CANVAS_WIDTH;
+            canvas.height = CANVAS_HEIGHT;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.fillStyle = '#fff';
+            ctx.font = `900 ${fontSize}px "Arial Black", "Helvetica"`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+
+            const data = ctx.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT).data;
+            const positions = [];
+            const step = 2; // Pixel stride sampling
+            for (let y = 0; y < CANVAS_HEIGHT; y += step) {
+                for (let x = 0; x < CANVAS_WIDTH; x += step) {
+                    if (data[(y * CANVAS_WIDTH + x) * 4] > 128) {
+                        positions.push({
+                            x: (x - CANVAS_WIDTH / 2) * 0.15,
+                            y: -(y - CANVAS_HEIGHT / 2) * 0.15,
+                            z: (Math.random() - 0.5) * 5
+                        });
+                    }
+                }
+            }
+            return positions;
+        }
+
+        // Generate Spiral galaxy arm positions
+        function generateGalaxyPositions() {
+            const positions = [];
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.pow(Math.random(), 1.8) * 48 + 2; // Core density
+                const arms = 2;
+                const armOffset = (Math.floor(Math.random() * arms) * (Math.PI * 2 / arms));
+                const spiralAngle = r * 0.18 + armOffset;
+                positions.push({
+                    x: Math.cos(spiralAngle) * r + (Math.random() - 0.5) * 2.5,
+                    y: Math.sin(spiralAngle) * r + (Math.random() - 0.5) * 2.5,
+                    z: (Math.random() - 0.5) * (14 - r * 0.2) // Flatten Z distribution on outer arms
+                });
+            }
+            return positions;
+        }
+
+        // Morph target buffer array
+        function morphToShape(newPositions) {
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                if (i < newPositions.length) {
+                    targetPositions[i] = newPositions[i];
+                } else {
+                    // Leftover particles form a revolving outer halo ring
+                    const angle = Math.random() * Math.PI * 2;
+                    const r = 38 + Math.random() * 20;
+                    targetPositions[i] = {
+                        x: Math.cos(angle) * r,
+                        y: Math.sin(angle) * r * 0.55,
+                        z: (Math.random() - 0.5) * 25
+                    };
+                }
+            }
+        }
+
+        // Initialize WebGL Scene
+        function initWebGL() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x040508, 0.002);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 50;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+
+            const vertices = [];
+            const particleColors = [];
+
+            // Fetch active palette colors
+            const palette = palettes[currentPalette];
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                vertices.push((Math.random() - 0.5) * 150, (Math.random() - 0.5) * 100, (Math.random() - 0.5) * 100);
+                velocities.push({ x: 0, y: 0, z: 0 });
+                
+                // Color seeding
+                const color = new THREE.Color();
+                if (Math.random() > palette.ratio) {
+                    color.setHex(palette.secondary);
+                } else {
+                    color.setHex(palette.primary);
+                }
+                particleColors.push(color.r, color.g, color.b);
+                targetPositions.push({ x: vertices[i*3], y: vertices[i*3+1], z: vertices[i*3+2] });
+            }
+
+            particleGeo = new THREE.BufferGeometry();
+            particleGeo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            particleGeo.setAttribute('color', new THREE.Float32BufferAttribute(particleColors, 3));
+
+            const glowTex = createGlowTexture('rgba(255, 255, 255, 1)', 'rgba(255, 106, 0, 0.55)');
+            
+            particles = new THREE.Points(particleGeo, new THREE.PointsMaterial({
+                size: 0.65,
+                map: glowTex,
+                transparent: true,
+                opacity: 0.95,
+                blending: THREE.AdditiveBlending,
+                vertexColors: true,
+                depthWrite: false
+            }));
+            scene.add(particles);
+
+            // Fade loading screen out
+            setTimeout(() => {
+                const screen = document.getElementById('loading-screen');
+                screen.style.opacity = 0;
+                setTimeout(() => screen.remove(), 1000);
+                isSystemReady = true;
+            }, 1000);
+        }
+
+        // Clock text state polling
+        function updateClockEngine() {
+            if (currentMode !== 'CLOCK') return;
+
+            const now = new Date();
+            const h = String(now.getHours()).padStart(2, '0');
+            const m = String(now.getMinutes()).padStart(2, '0');
+            const s = String(now.getSeconds()).padStart(2, '0');
+            const ms = Math.floor(now.getMilliseconds() / 10);
+
+            // Sync text display
+            document.getElementById('clock-display').innerHTML = `${h}:${m}:${s}<span class="text-2xl align-top opacity-50">.${ms.toString().padStart(2, '0')}</span>`;
+            document.getElementById('calendar-date').innerText = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' });
+
+            if (now.getMinutes() !== currentMinute) {
+                currentMinute = now.getMinutes();
+                const clockCoords = generateTextPositions(`${h}:${m}`);
+                morphToShape(clockCoords);
+            }
+        }
+
+        // Apply updated color palettes onto buffer geometry
+        function applyPalette(paletteKey) {
+            currentPalette = paletteKey;
+            const palette = palettes[paletteKey];
+            const colorAttr = particleGeo.attributes.color;
+            const newColors = [];
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const color = new THREE.Color();
+                if (Math.random() > palette.ratio) {
+                    color.setHex(palette.secondary);
+                } else {
+                    color.setHex(palette.primary);
+                }
+                newColors.push(color.r, color.g, color.b);
+            }
+
+            particleGeo.setAttribute('color', new THREE.Float32BufferAttribute(newColors, 3));
+            particleGeo.attributes.color.needsUpdate = true;
+
+            // Recreate particle texture to match glow highlights
+            let primaryGlow, secondaryGlow;
+            if (paletteKey === 'ORION') {
+                primaryGlow = 'rgba(255, 106, 0, 0.55)';
+                document.getElementById('clock-display').className = 'text-7xl font-black text-white glitch-text tracking-widest leading-none';
+                document.getElementById('calendar-date').className = 'text-[12px] text-orange-500 tracking-[0.6em] mb-2 uppercase animate-pulse';
+                applyHUDStyle('hud-panel', 'btn-control', '#ff6a00', 'rgba(255, 106, 0, 0.2)');
+            } else if (paletteKey === 'CYBER') {
+                primaryGlow = 'rgba(0, 240, 255, 0.55)';
+                document.getElementById('clock-display').className = 'text-7xl font-black text-white glitch-text glitch-text-blue tracking-widest leading-none';
+                document.getElementById('calendar-date').className = 'text-[12px] text-cyan-500 tracking-[0.6em] mb-2 uppercase animate-pulse';
+                applyHUDStyle('hud-panel-blue', 'btn-control-blue', '#00f0ff', 'rgba(0, 240, 255, 0.2)');
+            } else if (paletteKey === 'MATRIX') {
+                primaryGlow = 'rgba(0, 255, 102, 0.55)';
+                document.getElementById('clock-display').className = 'text-7xl font-black text-white glitch-text tracking-widest leading-none';
+                document.getElementById('calendar-date').className = 'text-[12px] text-green-500 tracking-[0.6em] mb-2 uppercase animate-pulse';
+                applyHUDStyle('hud-panel', 'btn-control', '#00ff66', 'rgba(0, 255, 102, 0.2)');
+            }
+
+            particles.material.map = createGlowTexture('rgba(255, 255, 255, 1)', primaryGlow);
+            particles.material.needsUpdate = true;
+        }
+
+        // Helper: Toggle style classes on the HUD panel
+        function applyHUDStyle(panelClass, btnClass, colorHex, borderHex) {
+            const panels = [document.getElementById('hud-panel-left'), document.getElementById('hud-panel-right')];
+            panels.forEach(p => {
+                p.className = `hud-panel ${panelClass}`;
+                p.style.color = colorHex;
+                p.style.borderColor = borderHex;
+                p.style.boxShadow = `0 0 20px ${borderHex.replace('0.2', '0.1')}`;
+            });
+
+            const btns = document.querySelectorAll('.btn-control, .btn-control-blue');
+            btns.forEach(b => {
+                b.className = `btn-control ${btnClass} ${b.classList.contains('active') ? 'active' : ''}`;
+                b.style.borderColor = borderHex.replace('0.2', '0.25');
+            });
+        }
+
+        // Dynamic FPS Meter
+        let lastFPSUpdate = 0;
+        let frameCount = 0;
+        let fps = 60;
+        
+        function updateFPSMeter() {
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFPSUpdate >= 1000) {
+                fps = Math.round((frameCount * 1000) / (now - lastFPSUpdate));
+                document.getElementById('fps-counter').innerText = fps;
+                frameCount = 0;
+                lastFPSUpdate = now;
+            }
+        }
+
+        // --- Render loop execution ---
+        function renderScene() {
+            requestAnimationFrame(renderScene);
+            updateClockEngine();
+            updateFPSMeter();
+
+            const posAttr = particleGeo.attributes.position;
+            
+            // Smoothly interpolate cursor target coord
+            cursor3D.lerp(targetCursor3D, 0.12);
+
+            // Display live coordinates in HUD
+            document.getElementById('cursor-x').innerText = cursor3D.x.toFixed(2);
+            document.getElementById('cursor-y').innerText = cursor3D.y.toFixed(2);
+            document.getElementById('return-speed').innerText = (forceFieldMode === 'IDLE' ? CONFIG.returnSpeedIdle : CONFIG.returnSpeedInteract).toFixed(2);
+
+            const pxArray = posAttr.array;
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const idx = i * 3;
+                let px = pxArray[idx], py = pxArray[idx + 1], pz = pxArray[idx + 2];
+                let tx = targetPositions[i].x, ty = targetPositions[i].y, tz = targetPositions[i].z;
+
+                // Force field interactions
+                if (mouseInScreen) {
+                    const dx = cursor3D.x - px;
+                    const dy = cursor3D.y - py;
+                    const dz = cursor3D.z - pz;
+                    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                    if (forceFieldMode === 'FIST') {
+                        // Gravity Well / Attraction force (pulls towards cursor coordinates)
+                        if (dist < 60) {
+                            const pullStrength = (60 - dist) * 0.0006;
+                            velocities[i].x += dx * pullStrength;
+                            velocities[i].y += dy * pullStrength;
+                            velocities[i].z += dz * pullStrength;
+                        }
+                    } else if (forceFieldMode === 'PALM') {
+                        // Nova Burst / Repulsion force (blows particles away from cursor coordinates)
+                        if (dist < 30) {
+                            const force = (30 - dist) / 30;
+                            const pushStrength = force * 2.8;
+                            velocities[i].x -= (dx / (dist + 0.1)) * pushStrength;
+                            velocities[i].y -= (dy / (dist + 0.1)) * pushStrength;
+                            velocities[i].z -= (dz / (dist + 0.1)) * pushStrength;
+                            // Add turbulence noise
+                            velocities[i].z += (Math.random() - 0.5) * 1.5;
+                        }
+                    }
+                }
+
+                // Physics update
+                const returnSpeed = forceFieldMode === 'IDLE' ? CONFIG.returnSpeedIdle : CONFIG.returnSpeedInteract;
+                
+                pxArray[idx] += (tx - px) * returnSpeed + velocities[i].x;
+                pxArray[idx + 1] += (ty - py) * returnSpeed + velocities[i].y;
+                pxArray[idx + 2] += (tz - pz) * returnSpeed + velocities[i].z;
+
+                // Damping friction force
+                velocities[i].x *= 0.93;
+                velocities[i].y *= 0.93;
+                velocities[i].z *= 0.93;
+            }
+
+            posAttr.needsUpdate = true;
+
+            // Slow camera drift
+            if (camera) {
+                camera.position.x = Math.sin(Date.now() * 0.0004) * 4;
+                camera.lookAt(0, 0, 0);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // --- Mouse and Gesture Coordinates Sync ---
+        window.addEventListener('mousemove', (e) => {
+            // Ignore mouse coordinates over HUD panels
+            if (e.target.closest('.hud-panel')) {
+                mouseInScreen = false;
+                return;
+            }
+
+            mouseInScreen = true;
+            
+            // Map window screen position to 3D space Z=0 plane
+            mouse2D.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse2D.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse2D, camera);
+            const intersectPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(planeZ, intersectPoint);
+            
+            targetCursor3D.copy(intersectPoint);
+        });
+
+        // Track click press state (Attraction vs Repulsion)
+        window.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.hud-panel')) return;
+            forceFieldMode = 'FIST'; // Enable Gravity Well
+            document.getElementById('force-mode').innerText = "GRAVITY WELL (ATTRACT)";
+            document.getElementById('force-mode').className = "text-sm font-bold text-pink-500 block tracking-wider";
+            document.getElementById('status-dot').className = "w-2.5 h-2.5 bg-pink-500 rounded-full animate-ping";
+        });
+
+        window.addEventListener('mouseup', () => {
+            forceFieldMode = 'PALM'; // Revert to Nova Burst
+            document.getElementById('force-mode').innerText = "NOVA BURST (REPEL)";
+            document.getElementById('force-mode').className = "text-sm font-bold text-cyan-400 block tracking-wider";
+            document.getElementById('status-dot').className = "w-2.5 h-2.5 bg-cyan-400 rounded-full animate-pulse";
+        });
+
+        window.addEventListener('mouseleave', () => {
+            mouseInScreen = false;
+            forceFieldMode = 'IDLE';
+            document.getElementById('force-mode').innerText = "ORBITAL STANDBY (IDLE)";
+            document.getElementById('force-mode').className = "text-sm font-bold text-white block tracking-wider";
+            document.getElementById('status-dot').className = "w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse";
+        });
+
+        // Mouse zoom interaction
+        window.addEventListener('wheel', (e) => {
+            if (e.target.closest('.hud-panel')) return;
+            
+            // Adjust camera.position.z within limits (20 to 120)
+            camera.position.z += e.deltaY * 0.05;
+            camera.position.z = Math.max(20, Math.min(120, camera.position.z));
+            document.getElementById('zoom-z').innerText = camera.position.z.toFixed(1);
+        });
+
+        // --- HUD Console Presets Toggle Actions ---
+        
+        // Morph shapes
+        document.getElementById('btn-shape-clock').addEventListener('click', (e) => {
+            toggleActiveButton(e.target);
+            currentMode = 'CLOCK';
+            currentMinute = -1; // Force immediate clock coordinates generation
+            updateClockEngine();
+        });
+
+        document.getElementById('btn-shape-logo').addEventListener('click', (e) => {
+            toggleActiveButton(e.target);
+            currentMode = 'LOGO';
+            const logoCoords = generateTextPositions("ESP32-P4", 95);
+            morphToShape(logoCoords);
+            document.getElementById('clock-display').innerText = "ESP32-P4";
+        });
+
+        document.getElementById('btn-shape-galaxy').addEventListener('click', (e) => {
+            toggleActiveButton(e.target);
+            currentMode = 'GALAXY';
+            const galaxyCoords = generateGalaxyPositions();
+            morphToShape(galaxyCoords);
+            document.getElementById('clock-display').innerText = "SPIN GALAXY";
+        });
+
+        function toggleActiveButton(activeBtn) {
+            const btns = activeBtn.parentElement.querySelectorAll('button');
+            btns.forEach(b => b.classList.remove('active'));
+            activeBtn.classList.add('active');
+        }
+
+        // Swap colors
+        document.getElementById('btn-color-orion').addEventListener('click', (e) => {
+            toggleActiveButton(e.target);
+            applyPalette('ORION');
+        });
+
+        document.getElementById('btn-color-cyber').addEventListener('click', (e) => {
+            toggleActiveButton(e.target);
+            applyPalette('CYBER');
+        });
+
+        document.getElementById('btn-color-matrix').addEventListener('click', (e) => {
+            toggleActiveButton(e.target);
+            applyPalette('MATRIX');
+        });
+
+        // Window resize responsive
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- Bootstrap Initialization ---
+        initWebGL();
+        renderScene();
+    </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# ESP-IDF
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# Visual Studio Code
+.vscode/
+.cache/
+.clangd
+.lingma/
+
+# Temporary files
+*~
+*.swp
+nul

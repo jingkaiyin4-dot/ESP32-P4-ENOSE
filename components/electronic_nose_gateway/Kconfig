@@ -1,0 +1,32 @@
+menu "Electronic Nose Gateway"
+
+    config ELEC_NOSE_GATEWAY_ENABLE
+        bool "Enable Electronic Nose Gateway"
+        default n
+        help
+            Enable electronic nose gateway to receive data from ESP32-S3
+            and process through edge AI gateway.
+
+    config ELEC_NOSE_UDP_PORT
+        int "UDP Server Port"
+        default 8888
+        depends on ELEC_NOSE_GATEWAY_ENABLE
+        help
+            UDP port to receive sensor data from ESP32-S3.
+
+    config ELEC_NOSE_API_KEY
+        string "Edge Gateway API Key"
+        default ""
+        depends on ELEC_NOSE_GATEWAY_ENABLE
+        help
+            API Key for Volcengine Edge AI Gateway.
+            Get it from https://console.volcengine.com/vei/aigateway/
+
+    config ELEC_NOSE_MODEL_URL
+        string "Model API URL"
+        default "https://*.*.*.*/api/v3/chat/completions" # Censored Volcano API / 已脱敏火山引擎API
+        depends on ELEC_NOSE_GATEWAY_ENABLE
+        help
+            Edge AI Gateway model API endpoint URL.
+
+endmenu

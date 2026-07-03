@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-P4 🌌 3D星云数据链交互控制系统</title>
+    
+    <!-- Google Fonts & FontAwesome Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Noto+Sans+SC:wght@300;400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --primary: #FF6A00;
+            --primary-glow: rgba(255, 106, 0, 0.4);
+            --bg-dark: #050608;
+            --card-bg: rgba(13, 15, 23, 0.75);
+            --text-main: #F3F4F6;
+            --text-muted: #9CA3AF;
+            --border-glow: rgba(255, 106, 0, 0.15);
+            --accent-blue: #00F0FF;
+            --accent-purple: #8A2BE2;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Outfit', 'Noto Sans SC', sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        /* 3D Nebula Canvas */
+        #nebula-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            cursor: grab;
+        }
+
+        #nebula-canvas:active {
+            cursor: grabbing;
+        }
+
+        /* Interface Overlay */
+        .ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 30px;
+        }
+
+        .interactive-element {
+            pointer-events: auto;
+        }
+
+        /* Header Info */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+
+        .title-box h1 {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #FFF 50%, var(--primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .title-box h1 i {
+            color: var(--primary);
+            filter: drop-shadow(0 0 10px var(--primary));
+        }
+
+        .title-box p {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Control Console Panel (Top Right) */
+        .console-panel {
+            background: rgba(13, 15, 23, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 280px;
+        }
+
+        .console-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .console-row span i {
+            margin-right: 6px;
+        }
+
+        .console-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 700;
+            transition: all 0.3s;
+        }
+
+        .console-btn:hover {
+            background: var(--primary);
+            border-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .console-btn.active {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+            box-shadow: 0 0 6px var(--primary);
+            transition: transform 0.1s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.3);
+        }
+
+        /* 3D Orbiting HTML Nodes Overlay */
+        #orbit-nodes-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        .orbit-node-wrapper {
+            position: absolute;
+            transform-style: preserve-3d;
+            pointer-events: auto;
+            cursor: pointer;
+            transition: transform 0.1s ease-out;
+        }
+
+        .orbit-node {
+            width: 140px;
+            height: 140px;
+            border-radius: 50%;
+            background: rgba(11, 12, 18, 0.85);
+            border: 2px solid rgba(255, 106, 0, 0.25);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+        }
+
+        .orbit-node-wrapper:hover .orbit-node, 
+        .orbit-node-wrapper.focused .orbit-node {
+            border-color: var(--primary);
+            box-shadow: 0 0 30px var(--primary-glow);
+            transform: scale(1.08);
+            background: rgba(255, 106, 0, 0.1);
+        }
+
+        .orbit-node-wrapper.blue:hover .orbit-node,
+        .orbit-node-wrapper.blue.focused .orbit-node {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 30px rgba(0, 240, 255, 0.4);
+            background: rgba(0, 240, 255, 0.1);
+        }
+
+        .orbit-node i {
+            font-size: 26px;
+            color: var(--primary);
+            margin-bottom: 8px;
+            transition: transform 0.3s;
+        }
+
+        .orbit-node-wrapper.blue i {
+            color: var(--accent-blue);
+        }
+
+        .orbit-node-wrapper:hover i {
+            transform: translateY(-3px) scale(1.1);
+        }
+
+        .orbit-node span {
+            font-size: 13px;
+            font-weight: 700;
+            color: white;
+            letter-spacing: 0.5px;
+        }
+
+        .orbit-node small {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 3px;
+        }
+
+        /* Pulsing energy rings around nodes */
+        .node-pulse-ring {
+            position: absolute;
+            top: -6px;
+            left: -6px;
+            right: -6px;
+            bottom: -6px;
+            border-radius: 50%;
+            border: 1px solid var(--primary);
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .orbit-node-wrapper.blue .node-pulse-ring {
+            border-color: var(--accent-blue);
+        }
+
+        .orbit-node-wrapper.focused .node-pulse-ring {
+            animation: ringPulse 1.8s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+        }
+
+        @keyframes ringPulse {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            100% { transform: scale(1.25); opacity: 0; }
+        }
+
+        /* Information Hologram Card (Bottom/Side Pane) */
+        .info-card-container {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-top: auto;
+        }
+
+        .hologram-panel {
+            background: var(--card-bg);
+            border: 1px solid var(--border-glow);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-radius: 16px;
+            padding: 24px 30px;
+            width: 60%;
+            min-height: 240px;
+            display: flex;
+            gap: 24px;
+            position: relative;
+            transform: translateY(150px);
+            opacity: 0;
+            transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.7);
+        }
+
+        .hologram-panel.active {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .hologram-panel::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, var(--primary), var(--accent-blue));
+        }
+
+        .panel-icon-box {
+            font-size: 40px;
+            color: var(--primary);
+            min-width: 60px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding-top: 5px;
+            filter: drop-shadow(0 0 8px var(--primary-glow));
+        }
+
+        .panel-text {
+            flex: 1;
+        }
+
+        .panel-text h3 {
+            font-size: 20px;
+            font-weight: 800;
+            color: white;
+            margin-bottom: 6px;
+        }
+
+        .panel-text p {
+            font-size: 14px;
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+
+        .panel-meta {
+            display: inline-block;
+            background: rgba(255, 106, 0, 0.08);
+            border: 1px solid rgba(255, 106, 0, 0.2);
+            color: var(--primary);
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            margin-top: 12px;
+        }
+
+        /* Preview Image Frame */
+        .preview-frame {
+            width: 180px;
+            height: 100%;
+            min-height: 160px;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            transition: all 0.5s;
+        }
+
+        /* Helper Instruction (Bottom Right) */
+        .help-box {
+            background: rgba(13, 15, 23, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(8px);
+            border-radius: 10px;
+            padding: 12px 18px;
+            text-align: right;
+            font-size: 11px;
+            color: var(--text-muted);
+            max-width: 260px;
+        }
+
+        .help-box i {
+            margin-left: 6px;
+            color: var(--accent-blue);
+        }
+
+        .help-box strong {
+            color: white;
+        }
+
+        /* 3D Flow arrows between nodes */
+        .orbit-connection-line {
+            position: absolute;
+            border: 1px dashed rgba(255, 106, 0, 0.2);
+            pointer-events: none;
+            z-index: 1;
+            border-radius: 50%;
+            transform-style: preserve-3d;
+        }
+
+        /* Back Button on Focused state */
+        .back-btn-box {
+            position: absolute;
+            bottom: 300px;
+            left: 50%;
+            transform: translateX(-50%) translateY(50px);
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.4s;
+            z-index: 10;
+        }
+
+        .back-btn-box.active {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .info-card-container {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 20px;
+            }
+            .hologram-panel {
+                width: 100%;
+                min-height: 180px;
+                padding: 16px 20px;
+                flex-direction: column-reverse;
+                gap: 16px;
+            }
+            .preview-frame {
+                width: 100%;
+                height: 100px;
+                min-height: 100px;
+            }
+            .console-panel {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 3D Nebula Canvas Layer -->
+    <canvas id="nebula-canvas"></canvas>
+
+    <!-- 3D Orbiting HTML Nodes Layer -->
+    <div id="orbit-nodes-container">
+        <!-- Node S3 -->
+        <div class="orbit-node-wrapper" id="node-s3" data-node="s3">
+            <div class="orbit-node">
+                <div class="node-pulse-ring"></div>
+                <i class="fa-solid fa-microchip"></i>
+                <span>ESP32-S3</span>
+                <small>边缘感知 / 本地AI</small>
+            </div>
+        </div>
+
+        <!-- Node C6 -->
+        <div class="orbit-node-wrapper" id="node-c6" data-node="c6">
+            <div class="orbit-node">
+                <div class="node-pulse-ring"></div>
+                <i class="fa-solid fa-network-wired"></i>
+                <span>ESP32-C6</span>
+                <small>ESP-NOW 网桥</small>
+            </div>
+        </div>
+
+        <!-- Node P4 -->
+        <div class="orbit-node-wrapper" id="node-p4" data-node="p4">
+            <div class="orbit-node">
+                <div class="node-pulse-ring"></div>
+                <i class="fa-solid fa-cubes"></i>
+                <span>ESP32-P4</span>
+                <small>中央控制网关</small>
+            </div>
+        </div>
+
+        <!-- Node Cloud -->
+        <div class="orbit-node-wrapper blue" id="node-cloud" data-node="cloud">
+            <div class="orbit-node">
+                <div class="node-pulse-ring"></div>
+                <i class="fa-solid fa-cloud-bolt"></i>
+                <span>云端大模型</span>
+                <small>火山豆包大模型</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- UI Overlay Layer -->
+    <div class="ui-overlay">
+        <!-- TOP ROW -->
+        <header>
+            <div class="title-box">
+                <h1><i class="fa-solid fa-circle-nodes"></i> ESP32-P4 星云数据链</h1>
+                <p>三维星云物理公转展示 & 嵌套双层 AI 架构可视化模型</p>
+            </div>
+
+            <!-- Console Panel -->
+            <div class="console-panel interactive-element">
+                <div class="console-row">
+                    <span><i class="fa-solid fa-gauge-high"></i> 公转速度: <span id="speed-indicator">1.0x</span></span>
+                    <input type="range" id="speed-slider" min="0" max="3" step="0.2" value="1.0">
+                </div>
+                <div class="console-row" style="margin-top: 6px;">
+                    <button class="console-btn" id="btn-play-pause">暂停公转</button>
+                    <button class="console-btn" id="btn-reset-view">重置3D视角</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- BACK BUTTON FOR ZOOM FOCUS STATE -->
+        <div class="back-btn-box interactive-element" id="back-btn-box">
+            <button class="btn-primary" id="btn-exit-focus">
+                <i class="fa-solid fa-arrow-rotate-left" style="margin-right: 8px;"></i> 恢复自动公转
+            </button>
+        </div>
+
+        <!-- BOTTOM ROW -->
+        <div class="info-card-container">
+            <!-- Glass hologram description panel -->
+            <div class="hologram-panel interactive-element" id="hologram-card">
+                <div class="panel-icon-box" id="card-icon">
+                    <i class="fa-solid fa-circle-nodes"></i>
+                </div>
+                <div class="panel-text">
+                    <h3 id="card-title">系统就绪 | 请点击或悬浮星云中的节点</h3>
+                    <p id="card-desc">星云中的四个节点（S3, C6, P4, 云端）正按数据流顺序公转。您可以使用鼠标左键在星云中拖拽来调整三维视角，倾斜或俯仰整个系统；点击任意节点即可触发镜头特写聚焦，展开嵌套 AI 控制链和具体数据封包格式。</p>
+                    <span class="panel-meta" id="card-meta">模式：三维公转监控中</span>
+                </div>
+                <!-- Mini preview image -->
+                <div class="preview-frame" id="card-preview" style="background-image: url('./image1.jpg'); opacity: 0.5;"></div>
+            </div>
+
+            <!-- Help Guide Info Box -->
+            <div class="help-box interactive-element">
+                <p><strong><i class="fa-solid fa-computer-mouse"></i> 操作指南:</strong></p>
+                <p style="margin-top: 4px;">鼠标左键<strong>拖拽</strong>：旋转 3D 视角</p>
+                <p>鼠标悬浮/<strong>点击</strong>：聚焦星云硬件节点</p>
+                <p>右侧控制台：可调节公转状态与速度</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3D Simulation Logic Script -->
+    <script>
+        // --- 1. 3D Nebula Canvas Starfield Simulation ---
+        const canvas = document.getElementById('nebula-canvas');
+        const ctx = canvas.getContext('2d');
+        let stars = [];
+        
+        let width = canvas.width = window.innerWidth;
+        let height = canvas.height = window.innerHeight;
+
+        // 3D View Parameters
+        const fov = 400; // Field of view
+        let rotationX = 0.5; // Pitch angle (tilt up/down)
+        let rotationY = 0.8; // Yaw angle (rotate left/right)
+        
+        // Target rotation for smooth transitions
+        let targetRotationX = 0.5;
+        let targetRotationY = 0.8;
+
+        // Auto Orbit State
+        let isOrbiting = true;
+        let orbitSpeedMultiplier = 1.0;
+        let orbitAngle = 0;
+
+        // Drag Interaction Variables
+        let isDragging = false;
+        let prevMouseX = 0;
+        let prevMouseY = 0;
+
+        class Star3D {
+            constructor() {
+                this.reset();
+                // Random position along spiral arms initially
+                this.angle = Math.random() * Math.PI * 2;
+                this.r = Math.random() * 320 + 20;
+                this.y = (Math.random() - 0.5) * 50; // Flattened height
+                this.x = this.r * Math.cos(this.angle);
+                this.z = this.r * Math.sin(this.angle);
+            }
+            reset() {
+                this.angle = Math.random() * Math.PI * 2;
+                this.r = Math.random() * 320 + 20;
+                this.y = (Math.random() - 0.5) * 60;
+                this.x = this.r * Math.cos(this.angle);
+                this.z = this.r * Math.sin(this.angle);
+                this.size = Math.random() * 2 + 0.6;
+                
+                const randColor = Math.random();
+                if (randColor > 0.7) {
+                    this.color = { r: 255, g: 106, b: 0 }; // Solar Orange
+                } else if (randColor > 0.3) {
+                    this.color = { r: 0, g: 240, b: 255 }; // Cyan Blue
+                } else {
+                    this.color = { r: 138, g: 43, b: 226 }; // Purple
+                }
+            }
+            update() {
+                // Slowly rotate individual stars in orbit
+                this.angle += 0.003 * (200 / (this.r + 50)); // Keplerian speed distribution
+                this.x = this.r * Math.cos(this.angle);
+                this.z = this.r * Math.sin(this.angle);
+            }
+        }
+
+        // Generate 3D Stars
+        function initStars() {
+            stars = [];
+            const count = Math.min(600, Math.floor((width * height) / 2500));
+            for (let i = 0; i < count; i++) {
+                stars.push(new Star3D());
+            }
+        }
+
+        // Project 3D Coordinates to 2D Screen
+        function project3D(x, y, z) {
+            // Apply Rotation Y (Yaw)
+            let x1 = x * Math.cos(rotationY) - z * Math.sin(rotationY);
+            let z1 = x * Math.sin(rotationY) + z * Math.cos(rotationY);
+
+            // Apply Rotation X (Pitch)
+            let y2 = y * Math.cos(rotationX) - z1 * Math.sin(rotationX);
+            let z2 = y * Math.sin(rotationX) + z1 * Math.cos(rotationX);
+
+            // Perspective scale factor
+            const scale = fov / (fov + z2);
+            const screenX = width / 2 + x1 * scale;
+            const screenY = height / 2 + y2 * scale;
+
+            return {
+                x: screenX,
+                y: screenY,
+                scale: scale,
+                zDepth: z2 // Keep depth for Z-Sorting
+            };
+        }
+
+        function drawStars() {
+            // Project and sort stars by depth
+            const projectedStars = stars.map(s => {
+                s.update();
+                const p = project3D(s.x, s.y, s.z);
+                return {
+                    star: s,
+                    p: p
+                };
+            });
+
+            // Sort back-to-front (Z-Sorting)
+            projectedStars.sort((a, b) => b.p.zDepth - a.p.zDepth);
+
+            // Render
+            projectedStars.forEach(ps => {
+                const s = ps.star;
+                const p = ps.p;
+                
+                // Hide stars that fall behind screen/camera
+                if (p.scale <= 0) return;
+
+                // Adjust color opacity based on depth
+                const opacity = Math.min(1.0, Math.max(0.08, (fov - p.zDepth) / (fov * 1.5)));
+                ctx.fillStyle = `rgba(${s.color.r}, ${s.color.g}, ${s.color.b}, ${opacity * (s.size / 2)})`;
+                
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, s.size * p.scale, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        // --- 2. HTML Orbit Nodes Controller ---
+        const nodeWrappers = document.querySelectorAll('.orbit-node-wrapper');
+        const orbitRadius = 240; // Orbital radius in 3D pixels
+
+        const nodeDataList = {
+            s3: {
+                title: "ESP32-S3 | 边缘传感与本地 AI 闭环",
+                icon: "fa-solid fa-microchip",
+                color: "var(--primary)",
+                meta: "芯片：ESP32-S3 | 协议：ESP-NOW | 推理引擎：TFLite Micro",
+                text: "作为边缘采集源头，ESP32-S3 节点直连气体传感器，通过芯片内的 <strong>TensorFlow Lite Micro 小模型</strong> 实时分类气体成分并输出评分（0-100%）。当新鲜度跌破阈值时，S3 无需等待云端，通过微秒级本地自锁程序驱动消杀风扇或紫外灯，实现就地自我避险，保证第一道物理安全闸。",
+                preview: "./image1.jpg"
+            },
+            c6: {
+                title: "ESP32-C6 | 网桥转换与 ESP-NOW 协同",
+                icon: "fa-solid fa-network-wired",
+                color: "var(--primary)",
+                meta: "芯片：ESP32-C6 | 网关协处理器 | 通信：ESP-NOW & SDIO",
+                text: "ESP32-C6 作为通信媒介，彻底弃用了不稳定的 BLE 蓝牙。它在 2.4GHz 频段下运行 **ESP-NOW 单播链路**，专门接收 S3 下位机的广播 JSON 数据。C6 拥有 MAC 自动学习刷新机制，接收后将封装好的串口报文透传给网关 P4。同时，C6 通过 SDIO 驱动为网关提供高速 Wi-Fi 6 网络信道。",
+                preview: "./image2.jpg"
+            },
+            p4: {
+                title: "ESP32-P4 | 中央智能核心与 UI 控制台",
+                icon: "fa-solid fa-cubes",
+                color: "var(--primary)",
+                meta: "芯片：ESP32-P4 | 多媒体：MIPI-DSI / MIPI-CSI | 图形：LVGL v9",
+                text: "ESP32-P4 网关主控芯片，搭载高性能双核 RISC-V。支持 MIPI-DSI 驱动 7 寸电容触摸屏，使用 LVGL v9 渲染出高动态磨砂控制台。P4 读取 C6 发送的串口数据并刷新屏幕 UI，以 1Hz 频率向云服务器进行数据同步；同时驱动 MIPI-CSI 摄像头扫码绑定。用户发起大模型交互时，由 P4 调度云端 API 交互。",
+                preview: "./image1.jpg"
+            },
+            cloud: {
+                title: "云端服务 | 火山豆包大模型决策覆盖",
+                icon: "fa-solid fa-cloud-bolt",
+                color: "var(--accent-blue)",
+                meta: "服务器：Volcano Engine Doubao LLM | 接口：WebSocket & HTTP",
+                text: "云服务器收集网关上报的历史趋势，在用户交互时调用 <strong>火山引擎“豆包”大语言模型 (Doubao LLM)</strong> 执行宏观推理。豆包模型评估传感器菌群演变和保鲜天数后，生成的诊断决策会附带强制控制包（如开启紫外灯 15 分钟），经由网关 P4 下达，高优先级**嵌套覆盖**并干预下位机 S3 的行为。",
+                preview: "./image2.jpg"
+            }
+        };
+
+        // Update Position of Orbiting HTML elements
+        function updateOrbitNodes() {
+            // S3, C6, P4, Cloud Server separated by 90 degrees
+            const phases = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
+
+            nodeWrappers.forEach((node, idx) => {
+                const key = node.getAttribute('data-node');
+                
+                // Compute current 3D position in horizontal plane
+                const currentAngle = orbitAngle + phases[idx];
+                const x = orbitRadius * Math.cos(currentAngle);
+                const y = 0; // Flat orbital plane
+                const z = orbitRadius * Math.sin(currentAngle);
+
+                // Project to 2D Screen
+                const p = project3D(x, y, z);
+
+                // Set HTML positioning and 3D scaling
+                // Scale bounds: 0.6 to 1.3 based on Z-depth
+                const displayScale = p.scale;
+                node.style.left = `${p.x}px`;
+                node.style.top = `${p.y}px`;
+                node.style.transform = `translate(-50%, -50%) scale(${displayScale})`;
+                
+                // Adjust z-index based on depth (front elements overlay back elements)
+                const zIndexValue = Math.floor(displayScale * 100);
+                node.style.zIndex = zIndexValue;
+
+                // Adjust opacity based on front/back depth
+                const opacityValue = Math.min(1.0, Math.max(0.4, (fov - p.zDepth) / (fov * 1.2)));
+                node.style.opacity = opacityValue;
+            });
+        }
+
+        // --- 3. Interactive Focus Logic (Zoom Camera on Click) ---
+        let focusedNodeKey = null;
+
+        function focusOnNode(nodeWrapper) {
+            focusedNodeKey = nodeWrapper.getAttribute('data-node');
+            isOrbiting = false; // Pause revolution
+
+            // Deactivate and remove active classes
+            nodeWrappers.forEach(n => n.classList.remove('focused'));
+            nodeWrapper.classList.add('focused');
+
+            // Find matching phase angle for selected node
+            const phases = { s3: 0, c6: Math.PI / 2, p4: Math.PI, cloud: Math.PI * 1.5 };
+            const nodePhase = phases[focusedNodeKey];
+
+            // Target rotation to bring node perfectly to the front (angle = Math.PI / 2, facing camera)
+            // orbitAngle + nodePhase = -Math.PI / 2
+            const targetOrbitAngle = -Math.PI / 2 - nodePhase;
+            
+            // Trigger transition animation
+            animateTransition(targetOrbitAngle, 0.3, 0.8); // Recentered perspective
+
+            // Reveal Glassmorphic Panel
+            const data = nodeDataList[focusedNodeKey];
+            const card = document.getElementById('hologram-card');
+            const cardIcon = document.getElementById('card-icon');
+            const cardTitle = document.getElementById('card-title');
+            const cardDesc = document.getElementById('card-desc');
+            const cardMeta = document.getElementById('card-meta');
+            const cardPreview = document.getElementById('card-preview');
+
+            cardIcon.innerHTML = `<i class="${data.icon}"></i>`;
+            cardIcon.style.color = data.color;
+            cardTitle.innerText = data.title;
+            cardDesc.innerHTML = data.text;
+            cardMeta.innerText = data.meta;
+            cardMeta.style.color = data.color;
+            cardMeta.style.borderColor = data.color;
+            cardMeta.style.background = data.color === 'var(--primary)' ? 'rgba(255, 106, 0, 0.08)' : 'rgba(0, 240, 255, 0.08)';
+            cardPreview.style.backgroundImage = `url('${data.preview}')`;
+            cardPreview.style.opacity = 1;
+
+            card.classList.add('active');
+            document.getElementById('back-btn-box').classList.add('active');
+        }
+
+        function exitFocusMode() {
+            focusedNodeKey = null;
+            nodeWrappers.forEach(n => n.classList.remove('focused'));
+            
+            isOrbiting = true; // Resume auto revolution
+            
+            // Hide description pane and back button
+            document.getElementById('hologram-card').classList.remove('active');
+            document.getElementById('back-btn-box').classList.remove('active');
+        }
+
+        // Interpolation animation for smooth transitions
+        let animFrameId = null;
+        function animateTransition(targetAngle, targetRX, targetRY) {
+            let startAngle = orbitAngle;
+            let startRX = rotationX;
+            let startRY = rotationY;
+
+            // Normalize angle to avoid long wraps
+            const diff = targetAngle - startAngle;
+            const steps = 30;
+            let currentStep = 0;
+
+            function step() {
+                currentStep++;
+                const t = currentStep / steps;
+                const ease = t * (2 - t); // EaseOutQuad
+
+                orbitAngle = startAngle + diff * ease;
+                rotationX = startRX + (targetRX - startRX) * ease;
+                rotationY = startRY + (targetRY - startRY) * ease;
+
+                // Sync target rotations
+                targetRotationX = rotationX;
+                targetRotationY = rotationY;
+
+                if (currentStep < steps) {
+                    animFrameId = requestAnimationFrame(step);
+                }
+            }
+
+            if (animFrameId) cancelAnimationFrame(animFrameId);
+            step();
+        }
+
+        // Add listeners to nodes
+        nodeWrappers.forEach(node => {
+            node.addEventListener('click', () => focusOnNode(node));
+        });
+
+        document.getElementById('btn-exit-focus').addEventListener('click', exitFocusMode);
+
+
+        // --- 4. Drag & Rotate Interactions ---
+        window.addEventListener('mousedown', (e) => {
+            // Ignore click on console and interactive UI panels
+            if (e.target.closest('.interactive-element')) return;
+            isDragging = true;
+            prevMouseX = e.clientX;
+            prevMouseY = e.clientY;
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+
+            const deltaX = e.clientX - prevMouseX;
+            const deltaY = e.clientY - prevMouseY;
+
+            // Adjust rotations based on drag sensitivity
+            targetRotationY += deltaX * 0.007;
+            targetRotationX += deltaY * 0.007;
+
+            // Clamp pitch (rotationX) between vertical limits to prevent flipping upside down
+            targetRotationX = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, targetRotationX));
+
+            prevMouseX = e.clientX;
+            prevMouseY = e.clientY;
+        });
+
+        // Touch Support for Mobile
+        window.addEventListener('touchstart', (e) => {
+            if (e.target.closest('.interactive-element')) return;
+            isDragging = true;
+            prevMouseX = e.touches[0].clientX;
+            prevMouseY = e.touches[0].clientY;
+        });
+
+        window.addEventListener('touchend', () => {
+            isDragging = false;
+        });
+
+        window.addEventListener('touchmove', (e) => {
+            if (!isDragging) return;
+            const deltaX = e.touches[0].clientX - prevMouseX;
+            const deltaY = e.touches[0].clientY - prevMouseY;
+
+            targetRotationY += deltaX * 0.007;
+            targetRotationX += deltaY * 0.007;
+            targetRotationX = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, targetRotationX));
+
+            prevMouseX = e.touches[0].clientX;
+            prevMouseY = e.touches[0].clientY;
+        });
+
+
+        // --- 5. Console Handlers ---
+        const speedSlider = document.getElementById('speed-slider');
+        const speedIndicator = document.getElementById('speed-indicator');
+        const playPauseBtn = document.getElementById('btn-play-pause');
+        const resetViewBtn = document.getElementById('btn-reset-view');
+
+        speedSlider.addEventListener('input', () => {
+            orbitSpeedMultiplier = parseFloat(speedSlider.value);
+            speedIndicator.innerText = `${orbitSpeedMultiplier.toFixed(1)}x`;
+        });
+
+        playPauseBtn.addEventListener('click', () => {
+            isOrbiting = !isOrbiting;
+            playPauseBtn.innerText = isOrbiting ? "暂停公转" : "启动公转";
+            if (isOrbiting) {
+                playPauseBtn.classList.remove('active');
+            } else {
+                playPauseBtn.classList.add('active');
+            }
+        });
+
+        resetViewBtn.addEventListener('click', () => {
+            targetRotationX = 0.5;
+            targetRotationY = 0.8;
+        });
+
+
+        // --- 6. Global Animation Render Loop ---
+        function renderLoop() {
+            // Draw background glow
+            ctx.fillStyle = '#050608';
+            ctx.fillRect(0, 0, width, height);
+
+            // Interpolate pitch/yaw rotation smoothly for inertial feel
+            rotationX += (targetRotationX - rotationX) * 0.1;
+            rotationY += (targetRotationY - rotationY) * 0.1;
+
+            // Orbit Angle update (Sequential Revolution)
+            if (isOrbiting) {
+                orbitAngle += 0.006 * orbitSpeedMultiplier;
+            }
+
+            // Draw Stars and Nodes
+            drawStars();
+            updateOrbitNodes();
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            ctx.fillStyle = '#050608';
+            ctx.fillRect(0, 0, width, height);
+        });
+
+        // Initialize Everything
+        initStars();
+        renderLoop();
+    </script>
+</body>
+</html>

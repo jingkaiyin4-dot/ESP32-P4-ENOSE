@@ -1,0 +1,3664 @@
+#include "ui.h"
+#include "lvgl.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_log.h"
+#include "app_video.h"
+#include "app_system.h"
+#include "quirc.h"
+#include "esp_cache.h"
+#include "esp_heap_caps.h"
+#include "esp_lv_adapter.h"
+#include "esp_private/esp_cache_private.h"
+#include "misc/cache/instance/lv_image_cache.h"
+#include "bsp/esp-bsp.h"
+#include "bme680.h"
+#include "ble_central.h"
+
+
+#include "uart_receiver.h"
+#include "cloud_sync.h"
+#include "xiaozhi_ai_service.h"
+#ifdef CONFIG_ELEC_NOSE_GATEWAY_ENABLE
+#include "electronic_nose_gateway.h"
+#endif
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "lwip/sockets.h"
+#include "lwip/inet.h"
+#include "lwip/netdb.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/videodev2.h>
+#include <dirent.h>
+
+extern "C" {
+    esp_err_t bsp_extra_codec_volume_set(int volume, void* handle);
+    esp_err_t bsp_display_brightness_set(int brightness_percent);
+    void web_jpeg_encode_frame(const uint8_t *cam_buf, uint32_t w, uint32_t h);
+    bool web_jpeg_available(void);
+    bool web_jpeg_get_frame(uint8_t **buf, uint32_t *w, uint32_t *h, size_t *len);
+}
+
+// ===== 静态 IP 配置 =====
+#define P4_STATIC_IP       "192.168.110.100"
+#define P4_GATEWAY         "192.168.110.1"
+#define P4_NETMASK         "255.255.255.0"
+#define P4_DNS             "114.114.114.114"
+#define P4_DNS_BACKUP      "223.5.5.5"
+
+LV_FONT_DECLARE(lv_font_montserrat_12);
+LV_FONT_DECLARE(lv_font_montserrat_14);
+LV_FONT_DECLARE(lv_font_montserrat_20);
+LV_FONT_DECLARE(lv_font_montserrat_24);
+LV_FONT_DECLARE(lv_font_montserrat_32);
+LV_FONT_DECLARE(lv_font_montserrat_48);
+LV_FONT_DECLARE(lv_font_source_han_sans_sc_14_cjk);
+LV_FONT_DECLARE(ui_font_xiaozhi_14);
+
+#include "sd_card_bg.h"
+
+static lv_font_t s_font_cjk_fallback;
+
+// Xiaozhi AI chat screen globals
+static lv_obj_t * xiaozhi_chat_panel = NULL;
+static lv_obj_t * xiaozhi_chat_label = NULL;
+static lv_timer_t * s_typewriter_timer = NULL;
+static int s_typewriter_char_idx = 0;
+static char s_typewriter_current_buf[512] = "";
+static char s_xiaozhi_target_text[512] = "";
+
+static lv_obj_t * scr_startup;
+static lv_obj_t * scr_main;
+static lv_obj_t * btn_wifi;
+static lv_obj_t * wifi_status_label;
+static lv_obj_t * cc_overlay;
+static lv_obj_t * cc_wifi_status_label;
+static lv_obj_t * cc_volume_slider;
+static lv_obj_t * cc_volume_label;
+static lv_obj_t * cc_brightness_slider;
+static bool cc_is_open = false;
+static lv_obj_t * apps_panel;
+static bool apps_drawer_open = false;
+
+static lv_obj_t * node1_voc_label;
+static lv_obj_t * node1_co2_label;
+static lv_obj_t * node1_odor_label;
+static lv_obj_t * node1_hcho_label;
+static lv_obj_t * node1_co_label;
+static lv_obj_t * node1_pred_label;
+
+static lv_obj_t * node2_voc_label;
+static lv_obj_t * node2_co2_label;
+static lv_obj_t * node2_odor_label;
+static lv_obj_t * node2_hcho_label;
+static lv_obj_t * node2_co_label;
+static lv_obj_t * node2_pred_label;
+
+static lv_timer_t * fake_data_timer;
+
+static lv_obj_t * c6_status_label;
+static lv_obj_t * c6_status_dot;
+
+static lv_obj_t * sync_status_label;
+static lv_obj_t * sync_status_dot;
+static lv_obj_t * wifi_tile;
+static lv_obj_t * c6_tile;
+static lv_obj_t * sync_tile;
+
+static lv_obj_t * wifi_list_modal;
+static lv_obj_t * wifi_pass_modal;
+static lv_obj_t * wifi_pass_title;
+static lv_obj_t * ta_pass;
+static lv_obj_t * kb;
+static char selected_ssid[64] = "";
+static lv_obj_t * wifi_list;
+static bool wifi_initialized = false;
+
+static lv_obj_t * s_wallpaper_img = NULL;
+static char s_current_wallpaper_path[128] = "";
+static lv_obj_t * s_startup_wallpaper_img = NULL;
+static char s_current_startup_wallpaper_path[128] = "";
+static lv_obj_t * wallpaper_modal;
+static lv_obj_t * wallpaper_list;
+
+typedef enum {
+    WALLPAPER_TARGET_STARTUP,
+    WALLPAPER_TARGET_MAIN
+} wallpaper_target_t;
+static wallpaper_target_t s_wallpaper_target = WALLPAPER_TARGET_MAIN;
+
+/* Island instances for startup and main screens */
+struct island_t {
+    lv_obj_t * capsule;
+    lv_obj_t * led_wrapper;
+    lv_obj_t * led_glow;
+    lv_obj_t * led_core;
+    lv_obj_t * status_lbl;
+    lv_obj_t * details_cnt;
+    lv_obj_t * detail_lbls[5];
+    bool expanded;
+};
+
+static island_t s_island = {0};
+static island_t m_island = {0};
+
+static lv_timer_t * s_startup_check_timer = NULL;
+static lv_timer_t * s_island_flow_timer = NULL;
+static int s_startup_check_index = 0;
+
+/* Startup neon art text globals */
+static lv_obj_t * s_neon_container = NULL;
+static lv_obj_t * s_neon_aura = NULL;
+static lv_obj_t * s_neon_glow = NULL;
+static lv_obj_t * s_neon_core = NULL;
+
+static lv_obj_t * scr_qr;
+static lv_obj_t * scr_s3a;
+static lv_obj_t * scr_s3b;
+static lv_obj_t * cam_img_obj;
+static lv_obj_t * qr_result_panel;
+static lv_obj_t * qr_result_label;
+
+#ifdef CONFIG_ELEC_NOSE_GATEWAY_ENABLE
+static lv_obj_t * ai_analyze_btn;
+static lv_obj_t * ai_analyze_btn_label;
+static lv_obj_t * ai_result_dialog;
+static lv_obj_t * ai_result_dialog_text;
+static char s_ai_result_buffer[4096];
+static bool s_ai_dialog_open = false;
+#endif
+
+/* Siri-style iridescent voice orb — multi-layer overlapping morphing blob */
+#define SIRI_LAYER_NUM 5
+static lv_obj_t * siri_layers[SIRI_LAYER_NUM];
+static lv_obj_t * siri_state_label = NULL;
+static int siri_hue = 222;
+static int siri_morph_tick = 0;
+static bool ai_service_running = false;
+static bool ptt_pressed = false;
+
+/* UV button references for ui_set_uv() */
+static lv_obj_t *s_uv_btn = NULL;
+static lv_obj_t *s_uv_lbl = NULL;
+static lv_obj_t *s_warmup_lbl = NULL;
+static lv_obj_t *s_uv_remain_lbl = NULL;
+static lv_obj_t *s_uv_dur_lbl = NULL;
+static int s_uv_dur_setting = 30;  /* local UV duration tracking (seconds) */
+
+static void uv_update_ui_cb(void *arg)
+{
+    bool on = (bool)(intptr_t)arg;
+    if (s_uv_btn && s_uv_lbl) {
+        if (on) {
+            lv_label_set_text(s_uv_lbl, "UV ON");
+            lv_obj_set_style_bg_color(s_uv_btn, lv_color_hex(0xFF5533), 0);
+        } else {
+            lv_label_set_text(s_uv_lbl, "UV OFF");
+            lv_obj_set_style_bg_color(s_uv_btn, lv_color_hex(0x6655FF), 0);
+        }
+    }
+}
+
+#define UDP_SENSOR_PORT 5005
+
+typedef struct {
+    bool valid;
+    float temp;
+    float hum;
+    float odor;
+    float hcho;
+    float co;
+    float voc;
+    int co2;
+    int pred;
+    char sensor_class[32];
+    float conf;
+    int fresh;
+    bool uv;
+    bool uv_auto;
+    int uv_remain;
+    int uv_dur;
+} udp_node_data_t;
+
+static udp_node_data_t s_udp_node1 = {};
+static udp_node_data_t s_udp_node2 = {};
+static SemaphoreHandle_t s_udp_data_mutex = NULL;
+static TaskHandle_t s_udp_listener_task = NULL;
+static struct quirc *q_cv = NULL;
+static int video_fd = -1;
+static bool camera_initialized = false;
+
+#define CAM_BUF_NUM 4
+static uint8_t *cam_buffers[CAM_BUF_NUM] = {NULL};
+static size_t cam_buf_size = 0;
+static size_t cam_alignment = 0;
+
+#if LVGL_VERSION_MAJOR == 9
+static lv_draw_buf_t cam_draw_buf = {};
+#else
+static lv_img_dsc_t cam_img_dsc = {};
+#endif
+
+static volatile int wifi_conn_status = 0;  // 0=init, 1=connecting, 2=connected, 3=disconnected
+static volatile int wifi_status_timer_ticks = 0;  // timeout counter for connecting state
+static TaskHandle_t wifi_scan_task_handle = NULL;
+static SemaphoreHandle_t wifi_scan_mutex = NULL;
+static volatile bool wifi_scan_in_progress = false;
+static char wifi_scan_ssids[60][33] = {};
+static uint16_t wifi_scan_result_count = 0;
+static volatile bool wifi_scan_last_ok = false;
+static volatile bool wifi_scan_disconnect_requested = false;
+static volatile bool wifi_scan_done = false;
+static bool wifi_disconnected_for_scan = false;
+static volatile uint32_t wifi_got_ip_tick = 0;
+
+static void update_volume_ui(int vol, bool sync_sliders);
+static void set_wifi_status_text(const char * text, lv_color_t color);
+static void control_center_init(lv_obj_t * parent);
+static void main_screen_event_cb(lv_event_t * e);
+static void wifi_scan_task(void * arg);
+static void request_wifi_scan(void);
+static void render_wifi_scan_results(void);
+static void render_wifi_scan_results_async(void * user_data);
+static void save_wifi_creds(const char *ssid, const char *pass);
+static bool load_wifi_creds(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+static void set_wallpaper(const char *file_path);
+static void save_wallpaper_path(const char *path);
+static bool load_wallpaper_path(char *path, size_t len);
+static void save_startup_wallpaper_path(const char *path);
+static bool load_startup_wallpaper_path(char *path, size_t len);
+static void create_wallpaper_modal(void);
+static void open_wallpaper_list(void);
+
+/* Forward declarations for startup check bar callbacks */
+static void build_island(lv_obj_t * parent, island_t * isl);
+static island_t * active_island(void);
+static void island_size_anim_cb(void * var, int32_t v);
+static void island_flow_timer_cb(lv_timer_t * timer);
+static void toggle_island(island_t * isl);
+static void update_island_details(island_t * isl);
+static void neon_anim_glow_cb(void * var, int32_t v);
+static void neon_anim_aura_cb(void * var, int32_t v);
+static void neon_anim_glow_x_cb(void * var, int32_t v);
+static void neon_anim_aura_y_cb(void * var, int32_t v);
+
+static void ptt_event_cb(lv_event_t * e);
+static void refresh_ai_status_ui(void);
+static void create_siri_orb(void);
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data) {
+    EventGroupHandle_t eg = app_system_event_group();
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
+        ESP_LOGI("WIFI", "SCAN_DONE event received");
+        wifi_scan_done = true;
+        return;
+    }
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (wifi_scan_in_progress || wifi_scan_disconnect_requested) {
+            wifi_scan_disconnect_requested = false;
+            ESP_LOGI("WIFI", "Wi-Fi disconnected for scan");
+            // Just set status flag, UI update happens in fake_data_timer_cb
+            wifi_conn_status = 1;
+            wifi_status_timer_ticks = 0;
+            return;
+        }
+
+        wifi_conn_status = 3;
+        wifi_got_ip_tick = 0;
+        if (eg) xEventGroupClearBits(eg, APP_EVENT_WIFI_CONNECTED);
+        if (eg) xEventGroupSetBits(eg, APP_EVENT_WIFI_DISCONNECTED);
+        ESP_LOGI("WIFI", "Wi-Fi disconnected, attempting reconnect...");
+        wifi_conn_status = 1;
+        wifi_status_timer_ticks = 0;
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI("WIFI", "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        wifi_conn_status = 2;
+        wifi_got_ip_tick = xTaskGetTickCount();
+        wifi_status_timer_ticks = 0;
+        if (eg) {
+            xEventGroupSetBits(eg, APP_EVENT_WIFI_CONNECTED);
+            xEventGroupClearBits(eg, APP_EVENT_WIFI_DISCONNECTED);
+        }
+
+        {
+            wifi_config_t conf;
+            if (esp_wifi_get_config(WIFI_IF_STA, &conf) == ESP_OK) {
+                snprintf(selected_ssid, sizeof(selected_ssid), "%s", conf.sta.ssid);
+                save_wifi_creds((const char *)conf.sta.ssid, (const char *)conf.sta.password);
+            }
+        }
+        // UI update will happen in fake_data_timer_cb (LVGL context)
+
+        // 确保 DNS 设置生效
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif) {
+            esp_netif_dns_info_t dns;
+            if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns) != ESP_OK || dns.ip.u_addr.ip4.addr == 0) {
+                inet_pton(AF_INET, P4_DNS, &dns.ip);
+                esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
+                inet_pton(AF_INET, P4_DNS_BACKUP, &dns.ip);
+                esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns);
+                ESP_LOGI("WIFI", "DNS reset: main=%s backup=%s", P4_DNS, P4_DNS_BACKUP);
+            } else {
+                char buf[16];
+                inet_ntop(AF_INET, &dns.ip, buf, sizeof(buf));
+                ESP_LOGI("WIFI", "DNS already set to %s", buf);
+            }
+        }
+    }
+}
+
+static bool camera_display_initialized = false;
+static volatile bool camera_stream_stopping = false;
+static int frame_skip_counter = 0;
+static bool cam_scale_applied = false;
+static bool cam_header_set = false;
+static bool s_qr_use_ppa = false;
+/* Temporarily disable PPA for QR pipeline to debug screen blank issue.
+ * Set to true to re-enable PPA hardware acceleration. */
+static bool s_ppa_enabled_for_qr = false;
+
+#define DISP_BUF_COUNT 2
+static uint8_t *disp_buffers[DISP_BUF_COUNT] = {NULL};
+static int disp_buf_idx = 0;
+static volatile bool disp_busy = false;
+
+/* Global style to disable shadows - applied to every container */
+static lv_style_t g_style_no_shadow;
+
+static void apply_no_shadow(lv_obj_t * obj) {
+    lv_obj_remove_style_all(obj);
+    lv_obj_add_style(obj, &g_style_no_shadow, 0);
+    lv_obj_add_style(obj, &g_style_no_shadow, LV_PART_SCROLLBAR);
+    lv_obj_add_style(obj, &g_style_no_shadow, LV_PART_INDICATOR);
+}
+
+static void camera_frame_cb(uint8_t *cam_buf, uint8_t buf_index, uint32_t width, uint32_t height, size_t size) {
+    LV_UNUSED(buf_index);
+
+    /* Pre-encode JPEG for web dashboard in this callback (runs in video task context) */
+    web_jpeg_encode_frame(cam_buf, width, height);
+
+    if (!camera_display_initialized || camera_stream_stopping) {
+        return;
+    }
+
+    /* Debug: log every 60th frame to confirm callback is running */
+    static int cb_debug_counter = 0;
+    if (++cb_debug_counter % 60 == 1) {
+        ESP_LOGI("CAM", "frame_cb: %lux%lu disp_init=%d skip_cnt=%d",
+                 (unsigned long)width, (unsigned long)height,
+                 camera_display_initialized, frame_skip_counter);
+    }
+
+    if (disp_buffers[0] == NULL) {
+        size_t align;
+        esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &align);
+        for (int i = 0; i < DISP_BUF_COUNT; i++) {
+            disp_buffers[i] = (uint8_t *)heap_caps_aligned_alloc(align, size, MALLOC_CAP_SPIRAM);
+            ESP_LOGI("CAM", "Display buffer %d allocated: %p", i, disp_buffers[i]);
+        }
+    }
+
+    if (++frame_skip_counter % 4 != 0) {
+        return;
+    }
+
+    uint8_t *curr_buf = disp_buffers[disp_buf_idx];
+    memcpy(curr_buf, cam_buf, size);
+
+    static int qr_throttle = 0;
+    if (++qr_throttle % 4 == 0) {
+        #define QR_W 200
+        #define QR_H 150
+        #define PPA_BUF_ALIGNMENT 128
+        static uint8_t *qr_gray = NULL;
+        static size_t qr_gray_size = 0;
+        
+        if (qr_gray == NULL || qr_gray_size != QR_W * QR_H) {
+            if (qr_gray) {
+                heap_caps_free(qr_gray);
+                qr_gray = NULL;
+            }
+            qr_gray_size = QR_W * QR_H;
+            qr_gray = (uint8_t *)heap_caps_aligned_alloc(PPA_BUF_ALIGNMENT, qr_gray_size, MALLOC_CAP_SPIRAM);
+            if (qr_gray) {
+                ESP_LOGI("QR", "QR gray buffer (PPA-aligned): %dx%d", QR_W, QR_H);
+            } else {
+                ESP_LOGE("QR", "Failed to allocate QR gray buffer - skipping QR scan");
+                /* Don't return - still need to update display! */
+            }
+        }
+        
+        if (qr_gray) {
+            /* ============================================================
+             * PPA hardware acceleration for QR gray pipeline:
+             * RGB565 camera frame → GRAY8 downscaled (200x150)
+             * Falls back to software if PPA unavailable
+             * ============================================================ */
+            bool ppa_ok = false;
+            ppa_client_handle_t ppa_qr = app_ppa_get_qr_client();
+
+            if (ppa_qr != NULL && !s_qr_use_ppa && s_ppa_enabled_for_qr) {
+                s_qr_use_ppa = true;
+                ESP_LOGI("QR", "PPA hardware acceleration ENABLED for QR gray pipeline");
+            }
+
+            if (s_qr_use_ppa && ppa_qr != NULL) {
+                ppa_srm_oper_config_t srm_cfg = {
+                    .in = {
+                        .buffer = curr_buf,
+                        .pic_w = width,
+                        .pic_h = height,
+                        .block_w = width,
+                        .block_h = height,
+                        .block_offset_x = 0,
+                        .block_offset_y = 0,
+                        .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+                    },
+                    .out = {
+                        .buffer = qr_gray,
+                        .buffer_size = qr_gray_size,
+                        .pic_w = QR_W,
+                        .pic_h = QR_H,
+                        .block_offset_x = 0,
+                        .block_offset_y = 0,
+                        .srm_cm = PPA_SRM_COLOR_MODE_GRAY8,
+                    },
+                    .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
+                    .scale_x = (float)QR_W / (float)width,
+                    .scale_y = (float)QR_H / (float)height,
+                    .mirror_x = false,
+                    .mirror_y = false,
+                    .rgb_swap = false,
+                    .byte_swap = false,
+                    .alpha_update_mode = PPA_ALPHA_NO_CHANGE,
+                    .mode = PPA_TRANS_MODE_BLOCKING,
+                    .user_data = NULL,
+                };
+                esp_err_t ppa_ret = ppa_do_scale_rotate_mirror(ppa_qr, &srm_cfg);
+                if (ppa_ret == ESP_OK) {
+                    ppa_ok = true;
+                } else {
+                    ESP_LOGW("QR", "PPA SRM failed: %s, falling back to SW", esp_err_to_name(ppa_ret));
+                    s_qr_use_ppa = false;
+                }
+            }
+
+            if (!ppa_ok) {
+                /* Software fallback: fixed-point stepping downscale + RGB565→Gray */
+                static uint32_t s_qr_src_w = 0, s_qr_src_h = 0;
+                static int s_qr_src_row_ofs[QR_H];
+                static int32_t s_qr_x_step;
+                if (s_qr_src_w != width || s_qr_src_h != height) {
+                    for (int y = 0; y < QR_H; y++)
+                        s_qr_src_row_ofs[y] = (y * height / QR_H) * width;
+                    s_qr_x_step = ((int32_t)width << 16) / QR_W;
+                    s_qr_src_w = width;
+                    s_qr_src_h = height;
+                }
+                const uint16_t *src_base = (const uint16_t*)curr_buf;
+                uint8_t *dst_qr = qr_gray;
+                for (int y = 0; y < QR_H; y++) {
+                    const uint16_t *src_row = src_base + s_qr_src_row_ofs[y];
+                    int32_t x_fp = 0;
+                    for (int x = 0; x < QR_W; x++) {
+                        uint16_t p = src_row[x_fp >> 16];
+                        uint8_t r = (p >> 8) & 0xF8;
+                        uint8_t g = (p >> 3) & 0xFC;
+                        uint8_t b = (p << 3) & 0xF8;
+                        *dst_qr++ = (r * 77 + g * 150 + b * 29) >> 8;
+                        x_fp += s_qr_x_step;
+                    }
+                }
+            }
+            
+            static int quirc_failed_count = 0;
+            
+            if (q_cv && quirc_failed_count > 10) {
+                quirc_destroy(q_cv);
+                q_cv = NULL;
+                quirc_failed_count = 0;
+            }
+            
+            if (!q_cv) {
+                q_cv = quirc_new();
+                if (q_cv) {
+                    quirc_resize(q_cv, QR_W, QR_H);
+                }
+            }
+            
+            if (q_cv && qr_gray) {
+                int qw = QR_W, qh = QR_H;
+                uint8_t *qbuf = quirc_begin(q_cv, &qw, &qh);
+                
+                if (qbuf && qw == QR_W && qh == QR_H) {
+                    memcpy(qbuf, qr_gray, QR_W * QR_H);
+                    quirc_end(q_cv);
+                    quirc_failed_count = 0;
+                    
+                    int num = quirc_count(q_cv);
+                    if (num > 0) {
+                        ESP_LOGI("QR", "Found %d QR!", num);
+                        for (int i = 0; i < num; i++) {
+                            struct quirc_code code;
+                            struct quirc_data data;
+                            quirc_extract(q_cv, i, &code);
+                            if (quirc_decode(&code, &data) == 0) {
+                                ESP_LOGI("QR", "SUCCESS: %s", data.payload);
+                                
+                                const char* payload = (const char*)data.payload;
+                                char node_id[32] = "Unknown";
+                                float voc = 0, eth = 0;
+                                int co2 = 0;
+                                
+                                if (strstr(payload, "S3_A") || strstr(payload, "S3A")) {
+                                    strcpy(node_id, "S3_A");
+                                    voc = 1.2f; co2 = 520; eth = 2.3f;
+                                } else if (strstr(payload, "S3_B") || strstr(payload, "S3B")) {
+                                    strcpy(node_id, "S3_B");
+                                    voc = 2.5f; co2 = 680; eth = 1.8f;
+                                } else if (strstr(payload, "S3")) {
+                                    strcpy(node_id, "S3");
+                                    voc = 1.0f + (rand() % 100) / 10.0f;
+                                    co2 = 400 + rand() % 200;
+                                    eth = 0.5f + (rand() % 50) / 10.0f;
+                                }
+                                
+                                if (qr_result_label) {
+                                    char info[256];
+                                    snprintf(info, sizeof(info), "Node: %s\nVOC: %.1f\nCO2: %d\nEth: %.1f",
+                                            node_id, voc, co2, eth);
+                                    
+                                    const char* current_text = lv_label_get_text(qr_result_label);
+                                    if (strcmp(current_text, info) != 0) {
+                                        lv_label_set_text(qr_result_label, info);
+                                        lv_obj_remove_flag(qr_result_panel, LV_OBJ_FLAG_HIDDEN);
+                                        lv_obj_set_style_bg_color(qr_result_panel, lv_color_hex(0x003300), 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    quirc_failed_count++;
+                    if (quirc_failed_count == 1) {
+                        ESP_LOGW("QR", "quirc_begin failed (count=%d)", quirc_failed_count);
+                    }
+                }
+            }
+        }
+    }
+
+    if (camera_display_initialized && cam_img_obj != NULL) {
+        esp_err_t lock_ret = esp_lv_adapter_lock(pdMS_TO_TICKS(100));
+        if (lock_ret == ESP_OK) {
+#if LVGL_VERSION_MAJOR == 9
+            uint32_t stride = lv_draw_buf_width_to_stride(width, LV_COLOR_FORMAT_RGB565);
+            if (stride * height > size) {
+                ESP_LOGW("CAM", "stride*%lu=%lu > size=%zu, fallback to width*2",
+                         (unsigned long)height, (unsigned long)(stride * height), size);
+                stride = width * 2;
+            }
+            lv_result_t db_ret = lv_draw_buf_init(&cam_draw_buf, width, height, LV_COLOR_FORMAT_RGB565,
+                                                  stride, curr_buf, size);
+            if (db_ret != LV_RESULT_OK) {
+                ESP_LOGE("CAM", "lv_draw_buf_init FAILED! ret=%d stride=%u size=%zu",
+                         (int)db_ret, (unsigned)stride, size);
+                esp_lv_adapter_unlock();
+                return;
+            }
+            /* Drop image cache: static draw_buf address won't change, so LVGL's cache
+             * would return stale decoded data without explicit invalidation. */
+            lv_image_cache_drop(&cam_draw_buf);
+
+            lv_image_set_src(cam_img_obj, &cam_draw_buf);
+            lv_obj_invalidate(cam_img_obj);
+#else
+            if (!cam_header_set) {
+                cam_img_dsc.header.always_zero = 0;
+                cam_img_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
+                cam_img_dsc.header.w = width;
+                cam_img_dsc.header.h = height;
+                cam_img_dsc.data_size = size;
+                cam_header_set = true;
+            }
+            cam_img_dsc.data = curr_buf;
+            lv_img_set_src(cam_img_obj, &cam_img_dsc);
+#endif
+            disp_buf_idx = (disp_buf_idx + 1) % DISP_BUF_COUNT;
+            esp_lv_adapter_unlock();
+        } else {
+            static int lock_fail_cnt = 0;
+            if (++lock_fail_cnt % 120 == 1) {
+                ESP_LOGW("CAM", "LVGL lock failed %d times", lock_fail_cnt);
+            }
+        }
+    }
+}
+
+/* Layer config: {base_size, hue_offset, pulse_amp, opa, speed_mult} */
+static const int SIRI_LAYER_CFG[SIRI_LAYER_NUM][5] = {
+    {185, 0,   40, 35, 1},
+    {155, 50,  35, 45, 2},
+    {125, 100, 45, 55, 1},
+    {95,  160, 25, 65, 3},
+    {65,  220, 30, 75, 2},
+};
+
+static void siri_anim_setter(void * var, int32_t v) {
+    LV_UNUSED(var);
+    if (!siri_layers[0]) return;
+    if (lv_scr_act() != scr_main) return;
+
+    siri_morph_tick += ptt_pressed ? 3 : 1;
+    int hue = v % 360;
+    bool error = (xiaozhi_ai_service_get_state() == XIAOZHI_STATE_ERROR);
+
+    uint8_t sat = ptt_pressed ? 100 : 80;
+    uint8_t val = ptt_pressed ? 100 : 90;
+    
+    xiaozhi_state_t state = xiaozhi_ai_service_get_state();
+    
+    // 物理微震颤幅度：说话时由于能量爆发震颤最大，思考时微弱浮游
+    float offset_scale = ptt_pressed ? 10.0f : 3.0f;
+    if (state == XIAOZHI_STATE_THINKING) offset_scale = 1.5f;
+
+    for (int i = 0; i < SIRI_LAYER_NUM; i++) {
+        if (!siri_layers[i]) continue;
+
+        // morph size with triangle wave for continuous breathing
+        int phase = (siri_morph_tick * SIRI_LAYER_CFG[i][4] + i * 50) % 360;
+        int tri;
+        if (phase < 90)      tri = phase * 4 / 90;           // 0→1
+        else if (phase < 180) tri = (180 - phase) * 4 / 90;  // 1→0
+        else if (phase < 270) tri = -(phase - 180) * 4 / 90; // 0→-1
+        else                  tri = -(360 - phase) * 4 / 90; // -1→0
+        int size = SIRI_LAYER_CFG[i][0] + SIRI_LAYER_CFG[i][2] * tri / 100;
+        if (size < 10) size = 10;
+
+        lv_obj_set_size(siri_layers[i], size, size);
+
+        // 应用非对称物理微震颤偏移 (越外层震颤衰减，营造流动流体感)
+        int tx = (int)(sinf(siri_morph_tick * 0.06f + i * 1.5f) * offset_scale * (1.0f - (float)i / SIRI_LAYER_NUM));
+        int ty = (int)(cosf(siri_morph_tick * 0.05f + i * 1.2f) * offset_scale * (1.0f - (float)i / SIRI_LAYER_NUM));
+        lv_obj_set_style_translate_x(siri_layers[i], tx, 0);
+        lv_obj_set_style_translate_y(siri_layers[i], ty, 0);
+
+        if (error) {
+            lv_color_t c = ptt_pressed ? lv_color_hex(0xFF6666) : lv_color_hex(0xFF3333);
+            lv_obj_set_style_bg_color(siri_layers[i], c, 0);
+            lv_obj_set_style_bg_opa(siri_layers[i], LV_OPA_30, 0);
+        } else {
+            lv_color_t c;
+            int l_opa = SIRI_LAYER_CFG[i][3];
+            
+            if (state == XIAOZHI_STATE_LISTENING) {
+                // 监听状态：青蓝(180) 到 极光绿(130) 的高频律动发光
+                int lh = (155 + (int)(sinf(siri_morph_tick * 0.12f + i * 0.6f) * 25)) % 360;
+                c = lv_color_hsv_to_rgb(lh, 95, 100);
+                l_opa = (l_opa * 125) / 100;
+            } else if (state == XIAOZHI_STATE_THINKING) {
+                // 思考状态：星云紫(280) 与 深邃蓝(210) 慢速交融自旋
+                int lh = (245 + (int)(cosf(siri_morph_tick * 0.05f + i * 0.7f) * 35)) % 360;
+                c = lv_color_hsv_to_rgb(lh, 85, 95);
+                l_opa = (l_opa * 90) / 100;
+            } else if (state == XIAOZHI_STATE_SPEAKING) {
+                // 说话状态：华丽炫彩彩虹光谱波纹
+                int lh = (hue * 2 + SIRI_LAYER_CFG[i][1]) % 360;
+                c = lv_color_hsv_to_rgb(lh, sat, val);
+                l_opa = (l_opa * 110) / 100;
+            } else {
+                // 默认/空闲状态：安静的深空蓝与太空灰极慢呼吸
+                int lh = (205 + (int)(sinf(siri_morph_tick * 0.02f) * 12)) % 360;
+                c = lv_color_hsv_to_rgb(lh, 45, 85);
+            }
+            
+            if (l_opa > 255) l_opa = 255;
+            lv_obj_set_style_bg_color(siri_layers[i], c, 0);
+            lv_obj_set_style_bg_opa(siri_layers[i], l_opa, 0);
+        }
+    }
+}
+
+// 助手函数：获取 UTF-8 字符的字节长度
+static int get_utf8_char_len(unsigned char ch) {
+    if ((ch & 0x80) == 0) return 1;
+    if ((ch & 0xE0) == 0xC0) return 2;
+    if ((ch & 0xF0) == 0xE0) return 3;
+    if ((ch & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+// 打字机效果定时器回调
+static void typewriter_timer_cb(lv_timer_t * t) {
+    if (!xiaozhi_chat_label) return;
+
+    const char * target = (const char *)lv_timer_get_user_data(t);
+    if (target[s_typewriter_char_idx] == '\0') {
+        lv_timer_delete(t);
+        s_typewriter_timer = NULL;
+        return;
+    }
+
+    int len = get_utf8_char_len((unsigned char)target[s_typewriter_char_idx]);
+    int copy_len = s_typewriter_char_idx + len;
+    if (copy_len >= sizeof(s_typewriter_current_buf)) {
+        lv_timer_delete(t);
+        s_typewriter_timer = NULL;
+        return;
+    }
+
+    memcpy(s_typewriter_current_buf, target, copy_len);
+    s_typewriter_current_buf[copy_len] = '\0';
+    lv_label_set_text(xiaozhi_chat_label, s_typewriter_current_buf);
+
+    s_typewriter_char_idx += len;
+}
+
+// 供主控调用的 ASR / TTS 文字更新接口
+extern "C" void ui_update_xiaozhi_text(const char* text) {
+    if (!text) return;
+    
+    // 跨线程锁保护
+    if (esp_lv_adapter_lock(pdMS_TO_TICKS(100)) == ESP_OK) {
+        if (s_typewriter_timer) {
+            lv_timer_delete(s_typewriter_timer);
+            s_typewriter_timer = NULL;
+        }
+
+        strncpy(s_xiaozhi_target_text, text, sizeof(s_xiaozhi_target_text) - 1);
+        s_xiaozhi_target_text[sizeof(s_xiaozhi_target_text) - 1] = '\0';
+        
+        s_typewriter_char_idx = 0;
+        s_typewriter_current_buf[0] = '\0';
+        
+        // 开启 30ms 逐字打字机定时器
+        s_typewriter_timer = lv_timer_create(typewriter_timer_cb, 30, s_xiaozhi_target_text);
+        
+        esp_lv_adapter_unlock();
+    }
+}
+
+static void create_siri_anim(void) {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, &siri_hue);
+    lv_anim_set_exec_cb(&a, siri_anim_setter);
+    lv_anim_set_values(&a, 0, 360);
+    lv_anim_set_time(&a, 6000);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_playback_time(&a, 0);
+    lv_anim_start(&a);
+}
+
+static void refresh_ai_status_ui(void) {
+    if (siri_state_label == NULL) return;
+
+    xiaozhi_state_t state = xiaozhi_ai_service_get_state();
+    ai_service_running = (state != XIAOZHI_STATE_IDLE && state != XIAOZHI_STATE_ERROR);
+    if (!ai_service_running) ptt_pressed = false;
+
+    const char * state_text = "Hold to Talk";
+    switch (state) {
+        case XIAOZHI_STATE_LISTENING:
+            state_text = "Listening...";
+            break;
+        case XIAOZHI_STATE_THINKING:
+            state_text = "Thinking...";
+            break;
+        case XIAOZHI_STATE_SPEAKING:
+            state_text = "Speaking";
+            break;
+        case XIAOZHI_STATE_ACTIVATING:
+            state_text = "Activating...";
+            break;
+        case XIAOZHI_STATE_CONNECTED:
+            state_text = "Hold to Talk";
+            break;
+        case XIAOZHI_STATE_ERROR:
+            state_text = "Error";
+            break;
+        default:
+            if (ai_service_running) {
+                state_text = "Connecting...";
+            }
+            break;
+    }
+
+    lv_label_set_text(siri_state_label, state_text);
+}
+
+static void ptt_event_cb(lv_event_t * e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    refresh_ai_status_ui();
+
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_PRESSING || code == LV_EVENT_LONG_PRESSED) {
+        if (!wifi_is_connected()) {
+            lv_label_set_text(siri_state_label, "WiFi Required");
+            siri_morph_tick += 10; // speed up morph as visual cue
+            return;
+        }
+
+        if (!ai_service_running) {
+            if (xiaozhi_ai_service_start() == ESP_OK) {
+                ai_service_running = true;
+                ESP_LOGI("UI", "PTT started XiaoZhi service");
+            } else {
+                ESP_LOGW("UI", "PTT start request ignored: service already active or start failed");
+            }
+        }
+
+        if (!ptt_pressed) {
+            ptt_pressed = true;
+            ESP_LOGI("UI", "PTT begin capture");
+            xiaozhi_ai_service_set_ptt(true);
+        }
+        refresh_ai_status_ui();
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST || code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED) {
+        if (ptt_pressed) {
+            ESP_LOGI("UI", "PTT end capture");
+            xiaozhi_ai_service_set_ptt(false);
+        }
+        ptt_pressed = false;
+        refresh_ai_status_ui();
+    }
+}
+
+static void fake_data_timer_cb(lv_timer_t * timer) {
+    static int hb_count = 0;
+    if (++hb_count % 20 == 1) ESP_LOGI("UI_TMR", "fake_data_timer_cb alive (hb=%d)", hb_count);
+    refresh_ai_status_ui();
+    // WiFi status UI update (runs in LVGL context - safe)
+    {
+        static int last_wifi_ui_status = -1;
+        int status = wifi_conn_status;
+        if (status != last_wifi_ui_status) {
+            last_wifi_ui_status = status;
+            wifi_status_timer_ticks = 0;
+        }
+        if (status == 2) {
+            char status_text[128];
+            snprintf(status_text, sizeof(status_text), "WiFi: %s", selected_ssid);
+            set_wifi_status_text(status_text, lv_color_hex(0x00FF00));
+        } else if (status == 1) {
+            wifi_status_timer_ticks = wifi_status_timer_ticks + 1;
+            if (wifi_status_timer_ticks > 20) {
+                // Over 10 seconds (20 * 500ms): timeout
+                ESP_LOGW("WIFI", "WiFi connect timeout (ticks=%d)", (int)wifi_status_timer_ticks);
+                set_wifi_status_text("WiFi: Timeout", lv_color_hex(0xFF6600));
+                wifi_conn_status = 3;
+                last_wifi_ui_status = 3;
+            } else {
+                set_wifi_status_text("WiFi: Connecting...", lv_color_hex(0xFFA500));
+            }
+        } else if (status == 3) {
+            set_wifi_status_text("WiFi: Disconnected", lv_color_hex(0xFF0000));
+        }
+    }
+
+    if (c6_status_label && c6_status_dot) {
+        bool c6_ok = uart_receiver_is_connected();
+        lv_obj_set_style_bg_color(c6_status_dot, c6_ok ? lv_color_hex(0x39D98A) : lv_color_hex(0x666666), 0);
+        lv_label_set_text(c6_status_label, c6_ok ? "Connected" : "Disconnected");
+        lv_obj_set_style_text_color(c6_status_label, c6_ok ? lv_color_hex(0x39D98A) : lv_color_hex(0x91A0B8), 0);
+        // 动态 C6 桥接卡片高亮边框
+        if (c6_tile) {
+            lv_obj_set_style_border_color(c6_tile, c6_ok ? lv_color_hex(0x03DAC6) : lv_color_hex(0x2A3A5A), 0);
+            lv_obj_set_style_border_width(c6_tile, c6_ok ? 2 : 1, 0);
+        }
+    }
+
+    if (s_udp_data_mutex != NULL && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        if (s_udp_node1.valid) {
+            int voc_int = (int)(s_udp_node1.voc * 10);
+            int odor_int = (int)(s_udp_node1.odor * 100);
+            int hcho_int = (int)(s_udp_node1.hcho * 100);
+            int co_int = (int)(s_udp_node1.co * 100);
+            int conf_int = (int)(s_udp_node1.conf * 100);
+            lv_label_set_text_fmt(node1_voc_label, "VOC: %d.%d ppm", voc_int / 10, voc_int % 10);
+            lv_label_set_text_fmt(node1_co2_label, "CO2: %d ppm", s_udp_node1.co2);
+            lv_label_set_text_fmt(node1_odor_label, "Odor: %d.%02d ppm", odor_int / 100, odor_int % 100);
+            lv_label_set_text_fmt(node1_hcho_label, "HCHO: %d.%02d ppm", hcho_int / 100, hcho_int % 100);
+            lv_label_set_text_fmt(node1_co_label, "CO: %d.%02d ppm", co_int / 100, co_int % 100);
+            lv_label_set_text_fmt(node1_pred_label, "Pred: %d (%s, %d%%)",
+                s_udp_node1.pred, s_udp_node1.sensor_class, conf_int);
+        }
+
+        /* Update warmup label — real-time countdown (C6 only pushes every ~10s) */
+        if (s_warmup_lbl) {
+            static int s_display_warmup = -1;
+            static uint32_t s_warmup_ticks = 0;
+            int rem = uart_receiver_get_warmup_remaining();
+            if (rem > 0) {
+                if (rem != s_display_warmup) {
+                    s_display_warmup = rem;
+                    s_warmup_ticks = 0;
+                } else {
+                    s_warmup_ticks++;
+                    if (s_warmup_ticks >= 2) {
+                        s_warmup_ticks = 0;
+                        if (s_display_warmup > 0) s_display_warmup--;
+                    }
+                }
+                if (s_display_warmup < 0) s_display_warmup = 0;
+                lv_label_set_text_fmt(s_warmup_lbl, "Warmup: %d s", s_display_warmup);
+                lv_obj_remove_flag(s_warmup_lbl, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                s_display_warmup = -1;
+                s_warmup_ticks = 0;
+                lv_obj_add_flag(s_warmup_lbl, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (s_uv_remain_lbl) {
+            lv_label_set_text_fmt(s_uv_remain_lbl, "UV remain: %d", s_udp_node1.uv_remain);
+        }
+        if (s_uv_dur_lbl) {
+            /* Sync local setting from UART data if it changed */
+            if (s_udp_node1.uv_dur > 0 && s_udp_node1.uv_dur != s_uv_dur_setting) {
+                s_uv_dur_setting = s_udp_node1.uv_dur;
+            }
+            lv_label_set_text_fmt(s_uv_dur_lbl, "UV dur: %ds", s_uv_dur_setting);
+        }
+
+        if (s_udp_node2.valid) {
+            int voc_int = (int)(s_udp_node2.voc * 10);
+            int odor_int = (int)(s_udp_node2.odor * 100);
+            int hcho_int = (int)(s_udp_node2.hcho * 100);
+            int co_int = (int)(s_udp_node2.co * 100);
+            int conf_int = (int)(s_udp_node2.conf * 100);
+            lv_label_set_text_fmt(node2_voc_label, "VOC: %d.%d ppm", voc_int / 10, voc_int % 10);
+            lv_label_set_text_fmt(node2_co2_label, "CO2: %d ppm", s_udp_node2.co2);
+            lv_label_set_text_fmt(node2_odor_label, "Odor: %d.%02d ppm", odor_int / 100, odor_int % 100);
+            lv_label_set_text_fmt(node2_hcho_label, "HCHO: %d.%02d ppm", hcho_int / 100, hcho_int % 100);
+            lv_label_set_text_fmt(node2_co_label, "CO: %d.%02d ppm", co_int / 100, co_int % 100);
+            lv_label_set_text_fmt(node2_pred_label, "Pred: %d (%s, %d%%)",
+                s_udp_node2.pred, s_udp_node2.sensor_class, conf_int);
+        }
+        xSemaphoreGive(s_udp_data_mutex);
+    }
+}
+
+static bool parse_udp_sensor_packet(const char * payload, char * node, size_t node_len, float * voc, int * co2, float * eth) {
+    LV_UNUSED(node_len);
+
+    /* Accept the required JSON prefix and ignore any extra debug fields after eth. */
+    if (sscanf(payload, "{\"node\":\"%31[^\"]\",\"voc\":%f,\"co2\":%d,\"eth\":%f", node, voc, co2, eth) == 4) {
+        return true;
+    }
+
+    /* Also accept a minimal JSON packet that ends right after eth. */
+    if (sscanf(payload, "{\"node\":\"%31[^\"]\",\"voc\":%f,\"co2\":%d,\"eth\":%f}", node, voc, co2, eth) == 4) {
+        return true;
+    }
+
+    if (sscanf(payload, "node=%31[^,],voc=%f,co2=%d,eth=%f", node, voc, co2, eth) == 4) {
+        return true;
+    }
+
+    return false;
+}
+
+static void udp_listener_task(void * arg) {
+    LV_UNUSED(arg);
+
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGE("UDP", "Failed to create UDP socket");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(UDP_SENSOR_PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        ESP_LOGE("UDP", "Failed to bind UDP port %d", UDP_SENSOR_PORT);
+        closesocket(sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI("UDP", "Listening for S3 sensor packets on UDP %d", UDP_SENSOR_PORT);
+
+    char rx_buf[256];
+    while (true) {
+        struct sockaddr_in source_addr = {};
+        socklen_t socklen = sizeof(source_addr);
+        int len = recvfrom(sock, rx_buf, sizeof(rx_buf) - 1, 0, (struct sockaddr *)&source_addr, &socklen);
+        if (len <= 0) {
+            continue;
+        }
+
+        rx_buf[len] = '\0';
+
+        char node[32] = {};
+        float voc = 0.0f;
+        int co2 = 0;
+        float eth = 0.0f;
+        if (!parse_udp_sensor_packet(rx_buf, node, sizeof(node), &voc, &co2, &eth)) {
+            ESP_LOGW("UDP", "Ignored packet: %s", rx_buf);
+            continue;
+        }
+
+        ESP_LOGI("UDP", "RX node=%s voc=%.1f co2=%d eth=%.1f", node, (double)voc, co2, (double)eth);
+
+        if (s_udp_data_mutex != NULL && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            udp_node_data_t * target = NULL;
+            if (strcmp(node, "S3_A") == 0 || strcmp(node, "S3A") == 0 || strcmp(node, "Node S3-A") == 0) {
+                target = &s_udp_node1;
+            } else if (strcmp(node, "S3_B") == 0 || strcmp(node, "S3B") == 0 || strcmp(node, "Node S3-B") == 0) {
+                target = &s_udp_node2;
+            }
+
+            if (target != NULL) {
+                target->valid = true;
+                target->odor = eth;
+                target->voc = voc;
+                target->co2 = co2;
+            }
+            xSemaphoreGive(s_udp_data_mutex);
+        }
+    }
+}
+
+static void vol_slider_event_cb(lv_event_t * e) {
+    lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e);
+    int vol = (int)lv_slider_get_value(slider);
+    bsp_extra_codec_volume_set(vol, NULL);
+    update_volume_ui(vol, false);
+}
+
+static void create_siri_orb(void) {
+    if (siri_layers[0]) {
+        ESP_LOGD("SIRI", "Orb already created, skipping");
+        return;
+    }
+    ESP_LOGI("SIRI", "Creating Siri multi-layer morphing blob...");
+
+    /* Create a click-through container for the blob cluster */
+    lv_obj_t * blob = lv_obj_create(scr_main);
+    apply_no_shadow(blob);
+    lv_obj_set_size(blob, 260, 260);
+    lv_obj_align(blob, LV_ALIGN_RIGHT_MID, -60, -10);
+    lv_obj_set_style_bg_opa(blob, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(blob, 0, 0);
+    lv_obj_clear_flag(blob, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < SIRI_LAYER_NUM; i++) {
+        siri_layers[i] = lv_obj_create(blob);
+        apply_no_shadow(siri_layers[i]);
+        int base = SIRI_LAYER_CFG[i][0];
+        lv_obj_set_size(siri_layers[i], base, base);
+        lv_obj_center(siri_layers[i]);
+        lv_obj_set_style_radius(siri_layers[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(siri_layers[i], 0, 0);
+        lv_obj_clear_flag(siri_layers[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(siri_layers[i], LV_OBJ_FLAG_CLICK_FOCUSABLE);
+
+        /* Only the outermost layer handles touch events */
+        if (i == 0) {
+            lv_obj_add_flag(siri_layers[i], LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_flag(siri_layers[i], LV_OBJ_FLAG_PRESS_LOCK);
+            lv_obj_add_event_cb(siri_layers[i], ptt_event_cb, LV_EVENT_PRESSED, NULL);
+            lv_obj_add_event_cb(siri_layers[i], ptt_event_cb, LV_EVENT_PRESSING, NULL);
+            lv_obj_add_event_cb(siri_layers[i], ptt_event_cb, LV_EVENT_LONG_PRESSED, NULL);
+            lv_obj_add_event_cb(siri_layers[i], ptt_event_cb, LV_EVENT_RELEASED, NULL);
+            lv_obj_add_event_cb(siri_layers[i], ptt_event_cb, LV_EVENT_PRESS_LOST, NULL);
+            lv_obj_add_event_cb(siri_layers[i], ptt_event_cb, LV_EVENT_SHORT_CLICKED, NULL);
+            lv_obj_add_event_cb(siri_layers[i], ptt_event_cb, LV_EVENT_CLICKED, NULL);
+        }
+    }
+
+    siri_state_label = lv_label_create(scr_main);
+    lv_label_set_text(siri_state_label, "Hold to Talk");
+    lv_obj_set_style_text_font(siri_state_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(siri_state_label, lv_color_hex(0x91A0B8), 0);
+    lv_obj_align_to(siri_state_label, blob, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
+
+    create_siri_anim();
+    refresh_ai_status_ui();
+
+    // 动态创建小智半透明磨砂玻璃对话看板
+    xiaozhi_chat_panel = lv_obj_create(scr_main);
+    apply_no_shadow(xiaozhi_chat_panel);
+    lv_obj_set_size(xiaozhi_chat_panel, 420, 180);
+    // 精细对齐在 Siri blob 的左侧
+    lv_obj_align_to(xiaozhi_chat_panel, blob, LV_ALIGN_OUT_LEFT_MID, -30, 0);
+    
+    // 渐变磨砂蓝与极光发光细边框
+    lv_obj_set_style_bg_color(xiaozhi_chat_panel, lv_color_hex(0x151C30), 0);
+    lv_obj_set_style_bg_opa(xiaozhi_chat_panel, LV_OPA_70, 0);
+    lv_obj_set_style_border_color(xiaozhi_chat_panel, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_set_style_border_opa(xiaozhi_chat_panel, LV_OPA_30, 0);
+    lv_obj_set_style_border_width(xiaozhi_chat_panel, 1, 0);
+    lv_obj_set_style_radius(xiaozhi_chat_panel, 20, 0);
+    lv_obj_clear_flag(xiaozhi_chat_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    // AI 状态高亮标题
+    lv_obj_t * chat_title = lv_label_create(xiaozhi_chat_panel);
+    lv_label_set_text(chat_title, "小智 AI 助手");
+    lv_obj_set_style_text_font(chat_title, &ui_font_xiaozhi_14, 0);
+    lv_obj_set_style_text_color(chat_title, lv_color_hex(0x03DAC6), 0); // 极光青绿高亮
+    lv_obj_align(chat_title, LV_ALIGN_TOP_LEFT, 16, 12);
+
+    // AI 实时对话文本标签
+    xiaozhi_chat_label = lv_label_create(xiaozhi_chat_panel);
+    lv_label_set_text(xiaozhi_chat_label, "按住右侧语音球开始与我对话...");
+    lv_obj_set_style_text_font(xiaozhi_chat_label, &ui_font_xiaozhi_14, 0);
+    lv_obj_set_style_text_color(xiaozhi_chat_label, lv_color_hex(0xE6ECF5), 0);
+    lv_label_set_long_mode(xiaozhi_chat_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(xiaozhi_chat_label, 388);
+    lv_obj_align(xiaozhi_chat_label, LV_ALIGN_TOP_LEFT, 16, 44);
+}
+
+static void btn_enter_event_handler(lv_event_t * e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI("UI", "Enter dashboard");
+        lv_screen_load(scr_main);
+        if (s_udp_data_mutex == NULL) {
+            s_udp_data_mutex = xSemaphoreCreateMutex();
+        }
+    }
+}
+
+static void ta_event_cb(lv_event_t * e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * ta = (lv_obj_t*)lv_event_get_target(e);
+    if (code == LV_EVENT_FOCUSED) {
+        lv_keyboard_set_textarea(kb, ta);
+        lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(kb);
+    } else if (code == LV_EVENT_DEFOCUSED) {
+        lv_keyboard_set_textarea(kb, NULL);
+        lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void wifi_connect_btn_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    lv_obj_add_flag(wifi_pass_modal, LV_OBJ_FLAG_HIDDEN);
+    set_wifi_status_text("WiFi: Connecting...", lv_color_hex(0xFFA500));
+
+    const char * pass = lv_textarea_get_text(ta_pass);
+
+    esp_wifi_scan_stop();
+    wifi_config_t wifi_config = {};
+    snprintf((char*)wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid), "%s", selected_ssid);
+    snprintf((char*)wifi_config.sta.password, sizeof(wifi_config.sta.password), "%s", pass);
+
+    ESP_LOGI("WIFI", "Connecting to %s...", selected_ssid);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_connect();
+
+    wifi_conn_status = 1;
+    wifi_status_timer_ticks = 0;
+}
+
+static void wifi_pass_back_btn_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    lv_obj_add_flag(wifi_pass_modal, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(wifi_list_modal);
+    lv_obj_remove_flag(wifi_list_modal, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void wifi_list_close_btn_cb(lv_event_t * e) {
+    lv_obj_add_flag(wifi_list_modal, LV_OBJ_FLAG_HIDDEN);
+    // 如果扫描时断开了连接且用户没手动连接,关闭对话框时重连
+    if (wifi_conn_status != 2) {
+        wifi_config_t conf;
+        if (esp_wifi_get_config(WIFI_IF_STA, &conf) == ESP_OK && conf.sta.ssid[0] != '\0') {
+            ESP_LOGI("WIFI", "Reconnecting after scan dialog closed to %s", conf.sta.ssid);
+            wifi_conn_status = 1;
+            wifi_status_timer_ticks = 0;
+            esp_wifi_connect();
+        }
+    }
+}
+
+static void wifi_list_btn_cb(lv_event_t * e) {
+    lv_obj_t * list_btn = (lv_obj_t*)lv_event_get_target(e);
+    lv_obj_t * label = lv_obj_get_child(list_btn, 0);
+    const char * ssid = label ? lv_label_get_text(label) : NULL;
+    if(ssid) {
+        snprintf(selected_ssid, sizeof(selected_ssid), "%s", ssid);
+        char title_text[128];
+        snprintf(title_text, sizeof(title_text), "Password for: %s", ssid);
+        lv_label_set_text(wifi_pass_title, title_text);
+        lv_textarea_set_text(ta_pass, "");
+        lv_obj_add_flag(wifi_list_modal, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(wifi_pass_modal, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+#define NVS_WIFI_NAMESPACE "wifi_creds"
+
+static void save_wifi_creds(const char *ssid, const char *pass) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_WIFI_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW("WIFI", "NVS open failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_str(handle, "ssid", ssid);
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, "pass", pass);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    if (err == ESP_OK) {
+        ESP_LOGI("WIFI", "Saved WiFi creds to NVS (SSID: %s)", ssid);
+    } else {
+        ESP_LOGW("WIFI", "NVS save failed: %s", esp_err_to_name(err));
+    }
+    nvs_close(handle);
+}
+
+static bool load_wifi_creds(char *ssid, size_t ssid_len, char *pass, size_t pass_len) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_WIFI_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+    size_t len = ssid_len;
+    err = nvs_get_str(handle, "ssid", ssid, &len);
+    if (err != ESP_OK) {
+        nvs_close(handle);
+        return false;
+    }
+    len = pass_len;
+    err = nvs_get_str(handle, "pass", pass, &len);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+    ESP_LOGI("WIFI", "Loaded WiFi creds from NVS (SSID: %s)", ssid);
+    return true;
+}
+
+#define NVS_UI_NAMESPACE "ui_config"
+
+static void save_wallpaper_path(const char *path) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_UI_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return;
+    nvs_set_str(handle, "wallpaper", path);
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
+static bool load_wallpaper_path(char *path, size_t len) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_UI_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) return false;
+    size_t plen = len;
+    err = nvs_get_str(handle, "wallpaper", path, &plen);
+    nvs_close(handle);
+    if (err == ESP_OK && path[0] != '\0') {
+        ESP_LOGI("UI", "Loaded wallpaper path: %s", path);
+        return true;
+    }
+    return false;
+}
+
+static void save_startup_wallpaper_path(const char *path) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_UI_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return;
+    nvs_set_str(handle, "startup_wp", path);
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
+static bool load_startup_wallpaper_path(char *path, size_t len) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_UI_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) return false;
+    size_t plen = len;
+    err = nvs_get_str(handle, "startup_wp", path, &plen);
+    nvs_close(handle);
+    if (err == ESP_OK && path[0] != '\0') {
+        ESP_LOGI("UI", "Loaded startup wallpaper path: %s", path);
+        return true;
+    }
+    return false;
+}
+
+static bool wallpaper_ends_with(const char *path, const char *ext) {
+    size_t plen = strlen(path);
+    size_t elen = strlen(ext);
+    if (plen < elen) return false;
+    const char *suffix = path + plen - elen;
+    while (*suffix && *ext) {
+        char c1 = *suffix++;
+        char c2 = *ext++;
+        if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+        if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+        if (c1 != c2) return false;
+    }
+    return true;
+}
+
+static void set_wallpaper(const char *file_path) {
+    if (!file_path || !file_path[0]) return;
+
+    int slot = (s_wallpaper_target == WALLPAPER_TARGET_STARTUP) ? 0 : 1;
+    const lv_image_dsc_t *img = sd_card_bg_load_jpeg_slot(file_path, slot);
+    if (!img) {
+        ESP_LOGW("UI", "Failed to load wallpaper: %s", file_path);
+        return;
+    }
+
+    if (s_wallpaper_target == WALLPAPER_TARGET_STARTUP) {
+        if (s_startup_wallpaper_img) {
+            lv_image_set_src(s_startup_wallpaper_img, img);
+        }
+        strncpy(s_current_startup_wallpaper_path, file_path, sizeof(s_current_startup_wallpaper_path) - 1);
+        save_startup_wallpaper_path(file_path);
+        ESP_LOGI("UI", "Startup wallpaper changed to: %s", file_path);
+    } else {
+        if (s_wallpaper_img) {
+            lv_image_set_src(s_wallpaper_img, img);
+        }
+        strncpy(s_current_wallpaper_path, file_path, sizeof(s_current_wallpaper_path) - 1);
+        save_wallpaper_path(file_path);
+        ESP_LOGI("UI", "Main wallpaper changed to: %s", file_path);
+    }
+}
+
+bool wifi_is_connected(void)
+{
+    return wifi_conn_status == 2;
+}
+
+/* ===== Startup Status Bar LED Animations & Cyclical Callback ===== */
+
+static void breath_anim_opa_cb(void * var, int32_t v) {
+    lv_obj_t * obj = (lv_obj_t *)var;
+    if (obj) {
+        lv_obj_set_style_bg_opa(obj, v, 0);
+    }
+}
+
+typedef enum {
+    SYS_DEV_SYSTEM,
+    SYS_DEV_SDCARD,
+    SYS_DEV_WIFI,
+    SYS_DEV_SENSOR,
+    SYS_DEV_BLE,
+    SYS_DEV_COUNT
+} sys_dev_t;
+
+static void startup_check_timer_cb(lv_timer_t * timer) {
+    LV_UNUSED(timer);
+    island_t * isl = active_island();
+    if (!isl || !isl->capsule || !isl->status_lbl || !isl->led_core || !isl->led_glow) return;
+
+    s_startup_check_index = (s_startup_check_index + 1) % SYS_DEV_COUNT;
+    
+    lv_color_t color = lv_color_hex(0x39D98A);
+    char text_buf[64] = "";
+
+    switch (s_startup_check_index) {
+        case SYS_DEV_SYSTEM: {
+            uint32_t free_heap = esp_get_free_heap_size() / 1024;
+            snprintf(text_buf, sizeof(text_buf), "System: OK (Heap %u KB)", (unsigned int)free_heap);
+            color = lv_color_hex(0x39D98A);
+            break;
+        }
+        case SYS_DEV_SDCARD: {
+            bool ready = sd_card_bg_is_ready();
+            snprintf(text_buf, sizeof(text_buf), "SD Card: %s", ready ? "Ready" : "Not Ready");
+            color = ready ? lv_color_hex(0x39D98A) : lv_color_hex(0xFFB84D);
+            break;
+        }
+        case SYS_DEV_WIFI: {
+            bool connected = wifi_is_connected();
+            if (connected) {
+                snprintf(text_buf, sizeof(text_buf), "Wi-Fi: Connected");
+                color = lv_color_hex(0x39D98A);
+            } else if (wifi_conn_status == 1) {
+                snprintf(text_buf, sizeof(text_buf), "Wi-Fi: Connecting...");
+                color = lv_color_hex(0x4AA3FF);
+            } else {
+                snprintf(text_buf, sizeof(text_buf), "Wi-Fi: Disconnected");
+                color = lv_color_hex(0xFFB84D);
+            }
+            break;
+        }
+        case SYS_DEV_SENSOR: {
+            bool online = s_udp_node1.valid;
+            snprintf(text_buf, sizeof(text_buf), "Sensor Link: %s", online ? "Online" : "Offline");
+            color = online ? lv_color_hex(0x39D98A) : lv_color_hex(0xFFB84D);
+            break;
+        }
+        case SYS_DEV_BLE: {
+            snprintf(text_buf, sizeof(text_buf), "Bluetooth: Ready");
+            color = lv_color_hex(0x4AA3FF);
+            break;
+        }
+        default:
+            break;
+    }
+
+    lv_label_set_text(isl->status_lbl, text_buf);
+    lv_obj_set_style_bg_color(isl->led_core, color, 0);
+    lv_obj_set_style_bg_color(isl->led_glow, color, 0);
+
+    if (isl->expanded) {
+        update_island_details(isl);
+    }
+}
+
+/* ===== Island Struct & Core Functions ===== */
+
+static void build_island(lv_obj_t * parent, island_t * isl)
+{
+    isl->capsule = lv_obj_create(parent);
+    apply_no_shadow(isl->capsule);
+    lv_obj_set_size(isl->capsule, 240, 36);
+    lv_obj_align(isl->capsule, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_set_style_bg_color(isl->capsule, lv_color_hex(0x131828), 0);
+    lv_obj_set_style_bg_opa(isl->capsule, LV_OPA_60, 0);
+    lv_obj_set_style_border_color(isl->capsule, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(isl->capsule, 1, 0);
+    lv_obj_set_style_radius(isl->capsule, 18, 0);
+    lv_obj_clear_flag(isl->capsule, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(isl->capsule, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(isl->capsule, [](lv_event_t * e) {
+        island_t * isl = (island_t *)lv_event_get_user_data(e);
+        if (isl) toggle_island(isl);
+    }, LV_EVENT_CLICKED, isl);
+
+    isl->led_wrapper = lv_obj_create(isl->capsule);
+    apply_no_shadow(isl->led_wrapper);
+    lv_obj_set_size(isl->led_wrapper, 32, 32);
+    lv_obj_align(isl->led_wrapper, LV_ALIGN_LEFT_MID, 8, 0);
+    lv_obj_set_style_bg_opa(isl->led_wrapper, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(isl->led_wrapper, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(isl->led_wrapper, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    isl->led_glow = lv_obj_create(isl->led_wrapper);
+    apply_no_shadow(isl->led_glow);
+    lv_obj_set_size(isl->led_glow, 12, 12);
+    lv_obj_center(isl->led_glow);
+    lv_obj_set_style_bg_color(isl->led_glow, lv_color_hex(0x39D98A), 0);
+    lv_obj_set_style_bg_opa(isl->led_glow, LV_OPA_40, 0);
+    lv_obj_set_style_radius(isl->led_glow, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(isl->led_glow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(isl->led_glow, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    isl->led_core = lv_obj_create(isl->led_wrapper);
+    apply_no_shadow(isl->led_core);
+    lv_obj_set_size(isl->led_core, 8, 8);
+    lv_obj_center(isl->led_core);
+    lv_obj_set_style_bg_color(isl->led_core, lv_color_hex(0x39D98A), 0);
+    lv_obj_set_style_bg_opa(isl->led_core, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(isl->led_core, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(isl->led_core, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(isl->led_core, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    isl->status_lbl = lv_label_create(isl->capsule);
+    lv_label_set_text(isl->status_lbl, "System Online");
+    lv_obj_set_style_text_color(isl->status_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(isl->status_lbl, &s_font_cjk_fallback, 0);
+    lv_obj_align(isl->status_lbl, LV_ALIGN_LEFT_MID, 46, 0);
+    lv_obj_add_flag(isl->status_lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    isl->details_cnt = lv_obj_create(isl->capsule);
+    apply_no_shadow(isl->details_cnt);
+    lv_obj_set_size(isl->details_cnt, 320, 190);
+    lv_obj_align(isl->details_cnt, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_bg_opa(isl->details_cnt, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(isl->details_cnt, 0, 0);
+    lv_obj_clear_flag(isl->details_cnt, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(isl->details_cnt, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(isl->details_cnt, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t * title = lv_label_create(isl->details_cnt);
+    lv_label_set_text(title, "SYSTEM TELEMETRY");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00F0FF), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 10, 0);
+    lv_obj_add_flag(title, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    const char *init_texts[] = {"Memory: -- KB free", "Storage: --", "Wi-Fi: --", "Sensor: --", "BLE: --"};
+    for (int i = 0; i < 5; i++) {
+        isl->detail_lbls[i] = lv_label_create(isl->details_cnt);
+        lv_obj_set_style_text_color(isl->detail_lbls[i], lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(isl->detail_lbls[i], &s_font_cjk_fallback, 0);
+        lv_label_set_recolor(isl->detail_lbls[i], true);
+        lv_label_set_text(isl->detail_lbls[i], init_texts[i]);
+        lv_obj_align(isl->detail_lbls[i], LV_ALIGN_TOP_LEFT, 10, 26 + i * 30);
+        lv_obj_add_flag(isl->detail_lbls[i], LV_OBJ_FLAG_EVENT_BUBBLE);
+    }
+
+    isl->expanded = false;
+}
+
+static island_t * active_island(void)
+{
+    lv_obj_t * act = lv_scr_act();
+    if (act == scr_main) return &m_island;
+    return &s_island;
+}
+
+static void toggle_island(island_t * isl)
+{
+    if (!isl || !isl->capsule) return;
+
+    isl->expanded = !isl->expanded;
+
+    if (isl->status_lbl) lv_obj_add_flag(isl->status_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (isl->led_wrapper) lv_obj_add_flag(isl->led_wrapper, LV_OBJ_FLAG_HIDDEN);
+    if (isl->details_cnt) lv_obj_add_flag(isl->details_cnt, LV_OBJ_FLAG_HIDDEN);
+
+    lv_anim_delete(isl->capsule, island_size_anim_cb);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, isl->capsule);
+    lv_anim_set_exec_cb(&a, island_size_anim_cb);
+    lv_anim_set_ready_cb(&a, [](lv_anim_t * a) {
+        island_t * isl = (island_t *)lv_anim_get_user_data(a);
+        if (!isl) return;
+        if (isl->expanded) {
+            if (isl->details_cnt) {
+                lv_obj_remove_flag(isl->details_cnt, LV_OBJ_FLAG_HIDDEN);
+                update_island_details(isl);
+            }
+        } else {
+            if (isl->status_lbl) lv_obj_remove_flag(isl->status_lbl, LV_OBJ_FLAG_HIDDEN);
+            if (isl->led_wrapper) lv_obj_remove_flag(isl->led_wrapper, LV_OBJ_FLAG_HIDDEN);
+        }
+    });
+    lv_anim_set_user_data(&a, isl);
+
+    if (isl->expanded) {
+        lv_anim_set_values(&a, 0, 100);
+        lv_anim_set_duration(&a, 350);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    } else {
+        lv_anim_set_values(&a, 100, 0);
+        lv_anim_set_duration(&a, 300);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+    }
+
+    lv_anim_start(&a);
+}
+
+static void update_island_details(island_t * isl)
+{
+    if (!isl || !isl->details_cnt) return;
+
+    uint32_t free_heap = esp_get_free_heap_size() / 1024;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "#39D98A ●# Memory: #FFFFFF %u KB free#", (unsigned int)free_heap);
+    if (isl->detail_lbls[0]) lv_label_set_text(isl->detail_lbls[0], buf);
+
+    bool sd_ready = sd_card_bg_is_ready();
+    if (isl->detail_lbls[1]) {
+        lv_label_set_text(isl->detail_lbls[1], sd_ready ? "#39D98A ●# Storage: #FFFFFF SD Mounted#" : "#FFB84D ●# Storage: #FFFFFF SD Disconnected#");
+    }
+
+    bool wifi_connected = wifi_is_connected();
+    if (isl->detail_lbls[2]) {
+        if (wifi_connected) {
+            lv_label_set_text(isl->detail_lbls[2], "#39D98A ●# Wi-Fi: #FFFFFF Connected#");
+        } else if (wifi_conn_status == 1) {
+            lv_label_set_text(isl->detail_lbls[2], "#4AA3FF ●# Wi-Fi: #FFFFFF Connecting...#");
+        } else {
+            lv_label_set_text(isl->detail_lbls[2], "#FFB84D ●# Wi-Fi: #FFFFFF Disconnected#");
+        }
+    }
+
+    if (isl->detail_lbls[3]) {
+        lv_label_set_text(isl->detail_lbls[3], "#39D98A ●# Sensor: #FFFFFF Online#");
+    }
+
+    if (isl->detail_lbls[4]) {
+        lv_label_set_text(isl->detail_lbls[4], "#39D98A ●# BLE Mesh: #FFFFFF Controller Active#");
+    }
+}
+
+/* ===== Smart Island (灵动岛) Animation Callbacks ===== */
+
+static void island_size_anim_cb(void * var, int32_t v) {
+    lv_obj_t * obj = (lv_obj_t *)var;
+    if (!obj) return;
+
+    int32_t w = 240 + ((360 - 240) * v / 100);
+    int32_t h = 36 + ((240 - 36) * v / 100);
+    int32_t r = 18 + ((24 - 18) * v / 100);
+
+    lv_obj_set_size(obj, w, h);
+    lv_obj_set_style_radius(obj, r, 0);
+}
+
+static void island_flow_timer_cb(lv_timer_t * timer) {
+    LV_UNUSED(timer);
+    island_t * isl = active_island();
+    if (!isl || !isl->capsule) return;
+    lv_obj_t * obj = isl->capsule;
+
+    static int s_border_flow_hue = 0;
+    s_border_flow_hue = (s_border_flow_hue + 10) % 360;
+    int v = s_border_flow_hue;
+
+    lv_color_t color;
+    if (v < 120) {
+        int r = 0x39 + ((0x00 - 0x39) * v / 120);
+        int g = 0xD9 + ((0xF0 - 0xD9) * v / 120);
+        int b = 0x8A + ((0xFF - 0x8A) * v / 120);
+        color = lv_color_make(r, g, b);
+    } else if (v < 240) {
+        int val = v - 120;
+        int r = 0x00 + ((0xFF - 0x00) * val / 120);
+        int g = 0xF0 + ((0x00 - 0xF0) * val / 120);
+        int b = 0xFF + ((0x7F - 0xFF) * val / 120);
+        color = lv_color_make(r, g, b);
+    } else {
+        int val = v - 240;
+        int r = 0xFF + ((0x39 - 0xFF) * val / 120);
+        int g = 0x00 + ((0xD9 - 0x00) * val / 120);
+        int b = 0x7F + ((0x8A - 0x7F) * val / 120);
+        color = lv_color_make(r, g, b);
+    }
+
+    lv_obj_set_style_border_color(obj, color, 0);
+    lv_obj_set_style_border_width(obj, 1, 0);
+    lv_obj_set_style_border_opa(obj, LV_OPA_90, 0);
+}
+
+/* ===== Startup Neon Text Animations ===== */
+
+static void neon_anim_glow_cb(void * var, int32_t v) {
+    lv_obj_t * obj = (lv_obj_t *)var;
+    if (obj) {
+        lv_obj_set_style_text_opa(obj, v, 0);
+    }
+}
+
+static void neon_anim_aura_cb(void * var, int32_t v) {
+    lv_obj_t * obj = (lv_obj_t *)var;
+    if (obj) {
+        lv_obj_set_style_text_opa(obj, v, 0);
+    }
+}
+
+static void neon_anim_glow_x_cb(void * var, int32_t v) {
+    lv_obj_t * obj = (lv_obj_t *)var;
+    if (obj) {
+        lv_obj_set_style_translate_x(obj, v, 0);
+    }
+}
+
+static void neon_anim_aura_y_cb(void * var, int32_t v) {
+    lv_obj_t * obj = (lv_obj_t *)var;
+    if (obj) {
+        lv_obj_set_style_translate_y(obj, v, 0);
+    }
+}
+
+static void ensure_wifi_ready(void) {
+    if(!wifi_initialized) {
+        esp_netif_t *netif = esp_netif_create_default_wifi_sta();
+
+        // 设置静态 IP
+        esp_netif_dhcpc_stop(netif);
+        esp_netif_ip_info_t ip_info;
+        inet_pton(AF_INET, P4_STATIC_IP, &ip_info.ip);
+        inet_pton(AF_INET, P4_GATEWAY, &ip_info.gw);
+        inet_pton(AF_INET, P4_NETMASK, &ip_info.netmask);
+        esp_netif_set_ip_info(netif, &ip_info);
+        ESP_LOGI("WIFI", "Static IP set to %s", P4_STATIC_IP);
+
+        // 设置 DNS
+        esp_netif_dns_info_t dns_info;
+        inet_pton(AF_INET, P4_DNS, &dns_info.ip);
+        esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_info);
+        esp_netif_dns_info_t dns_backup;
+        inet_pton(AF_INET, P4_DNS_BACKUP, &dns_backup.ip);
+        esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
+        ESP_LOGI("WIFI", "DNS main=%s backup=%s", P4_DNS, P4_DNS_BACKUP);
+
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        esp_wifi_init(&cfg);
+        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL);
+        esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL);
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_start();
+        wifi_initialized = true;
+
+        char saved_ssid[33] = {}, saved_pass[65] = {};
+        if (load_wifi_creds(saved_ssid, sizeof(saved_ssid), saved_pass, sizeof(saved_pass))) {
+            ESP_LOGI("WIFI", "Auto-connecting to saved AP: %s", saved_ssid);
+            wifi_config_t wifi_config = {};
+            strncpy((char *)wifi_config.sta.ssid, saved_ssid, sizeof(wifi_config.sta.ssid) - 1);
+            strncpy((char *)wifi_config.sta.password, saved_pass, sizeof(wifi_config.sta.password) - 1);
+            esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+            wifi_conn_status = 1;
+            wifi_status_timer_ticks = 0;
+            esp_wifi_connect();
+        }
+    }
+}
+
+static void render_wifi_scan_results(void) {
+    uint16_t number;
+    bool scan_ok;
+
+    if (wifi_scan_mutex == NULL || xSemaphoreTake(wifi_scan_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        ESP_LOGW("WIFI", "render_wifi: mutex take failed, showing Scan Busy");
+        lv_obj_clean(wifi_list);
+        lv_obj_t * lbl = lv_label_create(wifi_list);
+        lv_label_set_text(lbl, "Scan Busy");
+        return;
+    }
+
+    number = wifi_scan_result_count;
+    scan_ok = wifi_scan_last_ok;
+
+    if (number > 10) {
+        number = 10;
+    }
+
+    ESP_LOGI("WIFI", "render_wifi: number=%d scan_ok=%d", number, scan_ok);
+
+    lv_obj_clean(wifi_list);
+
+    if (!scan_ok) {
+        xSemaphoreGive(wifi_scan_mutex);
+        lv_obj_t * lbl = lv_label_create(wifi_list);
+        lv_label_set_text(lbl, "Scan Failed");
+        return;
+    }
+
+    if (number == 0) {
+        xSemaphoreGive(wifi_scan_mutex);
+        lv_obj_t * lbl = lv_label_create(wifi_list);
+        lv_label_set_text(lbl, "No Networks Found");
+        return;
+    }
+
+    int btn_index = 0;
+    for (uint16_t i = 0; i < number; i++) {
+        if (wifi_scan_ssids[i][0] == '\0') {
+            continue;
+        }
+        lv_obj_t * btn = lv_btn_create(wifi_list);
+        lv_obj_set_size(btn, 320, 40);
+        lv_obj_set_pos(btn, 10, btn_index * 45);
+        
+        lv_obj_t * lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, wifi_scan_ssids[i]);
+        lv_obj_center(lbl);
+        
+        lv_obj_add_event_cb(btn, wifi_list_btn_cb, LV_EVENT_CLICKED, NULL);
+        btn_index++;
+    }
+
+    xSemaphoreGive(wifi_scan_mutex);
+}
+
+static void render_wifi_scan_results_async(void * user_data) {
+    LV_UNUSED(user_data);
+    render_wifi_scan_results();
+}
+
+static void wifi_scan_task(void * arg) {
+    LV_UNUSED(arg);
+
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+#ifdef CONFIG_ELEC_NOSE_GATEWAY_ENABLE
+        // 电子鼻网关 AI 联网防御：若正在进行关键联网分析，暂缓并挂起扫描，保障数据通道优先
+        if (electronic_nose_gateway_get_state() == GATEWAY_STATE_PROCESSING) {
+            ESP_LOGW("WIFI", "Gateway is busy with AI analysis. Postponing WiFi scan for 1.5s...");
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            if (wifi_scan_task_handle) {
+                xTaskNotifyGive(wifi_scan_task_handle);
+            }
+            continue;
+        }
+#endif
+
+        ensure_wifi_ready();
+        wifi_scan_in_progress = true;
+        wifi_scan_last_ok = false;
+
+        // 不再在已连接 (wifi_conn_status == 2) 状态下强制断开 WiFi 链接
+        // 从而彻底防止 AI 网关网络被打断，且保留平滑静默扫描功能
+        wifi_disconnected_for_scan = false;
+        
+        if (wifi_conn_status == 1) {
+            ESP_LOGW("WIFI", "WiFi is connecting... Waiting 1s before scanning to avoid state clash");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+
+        ESP_LOGI("WIFI", "WiFi Scan triggered (status=%d), scanning...", (int)wifi_conn_status);
+
+        wifi_scan_done = false;
+        ESP_LOGI("WIFI", "Starting WiFi scan");
+        esp_err_t err = esp_wifi_scan_start(NULL, false);
+        if (err == ESP_OK) {
+            int wait_count = 0;
+            while (!wifi_scan_done && wait_count < 50) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                wait_count++;
+            }
+            if (!wifi_scan_done) {
+                ESP_LOGW("WIFI", "Scan wait timeout (%d ms)", wait_count * 100);
+                err = ESP_ERR_TIMEOUT;
+            } else {
+                ESP_LOGI("WIFI", "Scan completed in %d ms", wait_count * 100);
+            }
+        } else {
+            ESP_LOGE("WIFI", "Scan start failed: %s", esp_err_to_name(err));
+        }
+
+        if (wifi_scan_mutex && xSemaphoreTake(wifi_scan_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+            memset(wifi_scan_ssids, 0, sizeof(wifi_scan_ssids));
+            wifi_scan_result_count = 0;
+
+            if (err == ESP_OK) {
+                uint16_t number = 10;
+                wifi_ap_record_t *ap_records = (wifi_ap_record_t *)malloc(sizeof(wifi_ap_record_t) * number);
+                if (ap_records != NULL) {
+                    memset(ap_records, 0, sizeof(wifi_ap_record_t) * number);
+                    if (esp_wifi_scan_get_ap_records(&number, ap_records) == ESP_OK) {
+                        ESP_LOGI("WIFI", "Scan found %u APs", number);
+                        wifi_scan_last_ok = true;
+                        for (uint16_t i = 0; i < number && wifi_scan_result_count < 60; i++) {
+                            if (ap_records[i].ssid[0] == '\0') {
+                                continue;
+                            }
+                            strncpy(wifi_scan_ssids[wifi_scan_result_count], (const char *)ap_records[i].ssid, sizeof(wifi_scan_ssids[0]) - 1);
+                            wifi_scan_ssids[wifi_scan_result_count][sizeof(wifi_scan_ssids[0]) - 1] = '\0';
+                            wifi_scan_result_count++;
+                        }
+                    }
+                    free(ap_records);
+                }
+            }
+
+            xSemaphoreGive(wifi_scan_mutex);
+        }
+
+        wifi_scan_in_progress = false;
+        ESP_LOGI("WIFI", "Scan complete, count=%d, ok=%d", wifi_scan_result_count, wifi_scan_last_ok);
+
+        // 不在扫描结束后自动重连(避免与用户手动选新SSID冲突),
+        // 改为由 wifi_list_close_btn_cb 处理重连
+        if (wifi_disconnected_for_scan) {
+            wifi_disconnected_for_scan = false;
+        }
+
+        lv_async_call(render_wifi_scan_results_async, NULL);
+    }
+}
+
+static void request_wifi_scan(void) {
+    ESP_LOGI("WIFI", "request_wifi_scan: start");
+
+    if (wifi_scan_mutex == NULL) {
+        wifi_scan_mutex = xSemaphoreCreateMutex();
+    }
+    if (wifi_scan_task_handle == NULL) {
+        xTaskCreatePinnedToCore(wifi_scan_task, "wifi_scan", 12288, NULL, 2, &wifi_scan_task_handle, 0);
+        if (wifi_scan_task_handle == NULL) {
+            ESP_LOGE("WIFI", "Failed to create scan task");
+            wifi_scan_in_progress = false;
+            return;
+        }
+    }
+
+    wifi_scan_in_progress = true;
+    xTaskNotifyGive(wifi_scan_task_handle);
+    ESP_LOGI("WIFI", "request_wifi_scan: scan task notified");
+}
+
+static void btn_open_wifi_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    lv_obj_move_foreground(wifi_list_modal);
+    lv_obj_remove_flag(wifi_list_modal, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clean(wifi_list);
+    lv_obj_t * lbl = lv_label_create(wifi_list);
+    lv_label_set_text(lbl, "Scanning...");
+    lv_obj_center(lbl);
+    
+    // Directly call request_wifi_scan instead of using a one-shot timer
+    request_wifi_scan();
+}
+
+static void create_wifi_modals(void) {
+    lv_obj_t * overlay_parent = lv_layer_top();
+
+    wifi_list_modal = lv_obj_create(overlay_parent);
+    apply_no_shadow(wifi_list_modal);
+    lv_obj_set_size(wifi_list_modal, 400, 300);
+    lv_obj_align(wifi_list_modal, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_set_style_bg_color(wifi_list_modal, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_bg_opa(wifi_list_modal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(wifi_list_modal, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(wifi_list_modal, 1, 0);
+    lv_obj_set_style_radius(wifi_list_modal, 12, 0);
+    lv_obj_add_flag(wifi_list_modal, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t * list_title = lv_label_create(wifi_list_modal);
+    lv_label_set_text(list_title, "Available Wi-Fi Networks");
+    lv_obj_set_style_text_color(list_title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(list_title, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t * close_btn = lv_btn_create(wifi_list_modal);
+    lv_obj_align(close_btn, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_t * close_lbl = lv_label_create(close_btn);
+    lv_label_set_text(close_lbl, "X");
+    lv_obj_add_event_cb(close_btn, wifi_list_close_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    wifi_list = lv_obj_create(wifi_list_modal);
+    lv_obj_set_size(wifi_list, 360, 220);
+    lv_obj_align(wifi_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_scroll_dir(wifi_list, LV_DIR_VER);
+
+    wifi_pass_modal = lv_obj_create(overlay_parent);
+    apply_no_shadow(wifi_pass_modal);
+    lv_obj_set_size(wifi_pass_modal, 400, 300);
+    lv_obj_align(wifi_pass_modal, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_set_style_bg_color(wifi_pass_modal, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_bg_opa(wifi_pass_modal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(wifi_pass_modal, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(wifi_pass_modal, 1, 0);
+    lv_obj_set_style_radius(wifi_pass_modal, 12, 0);
+    lv_obj_add_flag(wifi_pass_modal, LV_OBJ_FLAG_HIDDEN);
+
+    wifi_pass_title = lv_label_create(wifi_pass_modal);
+    lv_label_set_text(wifi_pass_title, "Enter password");
+    lv_obj_set_style_text_color(wifi_pass_title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(wifi_pass_title, LV_ALIGN_TOP_MID, 0, 0);
+
+    ta_pass = lv_textarea_create(wifi_pass_modal);
+    lv_textarea_set_placeholder_text(ta_pass, "Password...");
+    lv_textarea_set_password_mode(ta_pass, true);
+    lv_obj_set_width(ta_pass, 300);
+    lv_obj_align(ta_pass, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_add_event_cb(ta_pass, ta_event_cb, LV_EVENT_ALL, NULL);
+
+    lv_obj_t * btn_conn = lv_btn_create(wifi_pass_modal);
+    lv_obj_align(btn_conn, LV_ALIGN_BOTTOM_RIGHT, -20, -10);
+    lv_obj_add_event_cb(btn_conn, wifi_connect_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * lbl_conn = lv_label_create(btn_conn);
+    lv_label_set_text(lbl_conn, "Connect");
+
+    lv_obj_t * btn_back = lv_btn_create(wifi_pass_modal);
+    lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, 20, -10);
+    lv_obj_add_event_cb(btn_back, wifi_pass_back_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, "Back");
+
+    kb = lv_keyboard_create(overlay_parent);
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ===== Wallpaper Functions ===== */
+
+static void wallpaper_select_cb(lv_event_t * e) {
+    lv_obj_t * btn = (lv_obj_t *)lv_event_get_target(e);
+    const char * path = (const char *)lv_obj_get_user_data(btn);
+    if (path) {
+        set_wallpaper(path);
+    }
+    lv_obj_add_flag(wallpaper_modal, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void wallpaper_list_close_btn_cb(lv_event_t * e) {
+    lv_obj_add_flag(wallpaper_modal, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void open_wallpaper_list(void) {
+    lv_obj_clean(wallpaper_list);
+
+    if (!sd_card_bg_is_ready()) {
+        lv_obj_t * lbl = lv_label_create(wallpaper_list);
+        lv_label_set_text(lbl, "SD Card Not Ready");
+        lv_obj_center(lbl);
+        lv_obj_move_foreground(wallpaper_modal);
+        lv_obj_remove_flag(wallpaper_modal, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    DIR *dir = opendir("/sdcard");
+    if (!dir) {
+        lv_obj_t * lbl = lv_label_create(wallpaper_list);
+        lv_label_set_text(lbl, "Cannot Open /sdcard");
+        lv_obj_center(lbl);
+        lv_obj_move_foreground(wallpaper_modal);
+        lv_obj_remove_flag(wallpaper_modal, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_REG || entry->d_type == DT_UNKNOWN) {
+            if (wallpaper_ends_with(entry->d_name, ".jpg") || wallpaper_ends_with(entry->d_name, ".jpeg")) {
+                char full_path[256];
+                snprintf(full_path, sizeof(full_path), "/sdcard/%s", entry->d_name);
+
+                char *path_copy = (char *)malloc(strlen(full_path) + 1);
+                if (path_copy) {
+                    strcpy(path_copy, full_path);
+
+                    lv_obj_t * item_btn = lv_btn_create(wallpaper_list);
+                    lv_obj_set_size(item_btn, 320, 40);
+                    lv_obj_set_pos(item_btn, 10, count * 45);
+                    
+                    lv_obj_t * lbl = lv_label_create(item_btn);
+                    lv_label_set_text(lbl, entry->d_name);
+                    lv_obj_center(lbl);
+                    
+                    lv_obj_set_user_data(item_btn, path_copy);
+                    lv_obj_add_event_cb(item_btn, wallpaper_select_cb, LV_EVENT_CLICKED, NULL);
+                    lv_obj_add_event_cb(item_btn, [](lv_event_t * e) {
+                        void *data = lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+                        if (data) free(data);
+                    }, LV_EVENT_DELETE, NULL);
+                    count++;
+                }
+            }
+        }
+    }
+    closedir(dir);
+
+    if (count == 0) {
+        lv_obj_t * lbl = lv_label_create(wallpaper_list);
+        lv_label_set_text(lbl, "No JPEG files found");
+        lv_obj_center(lbl);
+    }
+
+    lv_obj_move_foreground(wallpaper_modal);
+    lv_obj_remove_flag(wallpaper_modal, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void create_wallpaper_modal(void) {
+    lv_obj_t * overlay_parent = lv_layer_top();
+
+    wallpaper_modal = lv_obj_create(overlay_parent);
+    apply_no_shadow(wallpaper_modal);
+    lv_obj_set_size(wallpaper_modal, 400, 400);
+    lv_obj_align(wallpaper_modal, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_set_style_bg_color(wallpaper_modal, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_bg_opa(wallpaper_modal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(wallpaper_modal, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(wallpaper_modal, 1, 0);
+    lv_obj_set_style_radius(wallpaper_modal, 12, 0);
+    lv_obj_add_flag(wallpaper_modal, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t * title = lv_label_create(wallpaper_modal);
+    lv_label_set_text(title, "Select Wallpaper");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+
+    lv_obj_t * close_btn = lv_btn_create(wallpaper_modal);
+    lv_obj_align(close_btn, LV_ALIGN_TOP_RIGHT, -8, 4);
+    lv_obj_set_size(close_btn, 36, 36);
+    lv_obj_set_style_radius(close_btn, 18, 0);
+    lv_obj_t * close_lbl = lv_label_create(close_btn);
+    lv_label_set_text(close_lbl, "X");
+    lv_obj_center(close_lbl);
+    lv_obj_add_event_cb(close_btn, wallpaper_list_close_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    wallpaper_list = lv_obj_create(wallpaper_modal);
+    lv_obj_set_size(wallpaper_list, 360, 320);
+    lv_obj_align(wallpaper_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_scroll_dir(wallpaper_list, LV_DIR_VER);
+}
+
+#ifdef CONFIG_ELEC_NOSE_GATEWAY_ENABLE
+static void ai_analyze_btn_cb(lv_event_t * e) {
+    char sensor_json[512];
+    bool has_data = false;
+
+    extern float g_temperature;
+    extern float g_humidity;
+
+    if (s_udp_data_mutex != NULL && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (s_udp_node1.valid) {
+            int odor_int = (int)(s_udp_node1.odor * 100);
+            int hcho_int = (int)(s_udp_node1.hcho * 100);
+            int co_int = (int)(s_udp_node1.co * 100);
+            int voc_int = (int)(s_udp_node1.voc * 10);
+            int conf_int = (int)(s_udp_node1.conf * 100);
+            int temp_int = (int)(g_temperature * 10);
+            int humi_int = (int)(g_humidity * 10);
+            snprintf(sensor_json, sizeof(sensor_json),
+                "{\"node\":\"S3_Receiver\",\"odor\":%d.%02d,\"hcho\":%d.%02d,\"co\":%d.%02d,"
+                "\"voc\":%d.%d,\"co2\":%d,\"pred\":%d,\"class\":\"%s\",\"conf\":%d.%02d,"
+                "\"fresh\":%d,\"temp\":%d.%d,\"humi\":%d.%d}",
+                odor_int / 100, odor_int % 100,
+                hcho_int / 100, hcho_int % 100,
+                co_int / 100, co_int % 100,
+                voc_int / 10, voc_int % 10,
+                s_udp_node1.co2, s_udp_node1.pred,
+                s_udp_node1.sensor_class,
+                conf_int / 100, conf_int % 100,
+                s_udp_node1.fresh,
+                temp_int / 10, temp_int % 10,
+                humi_int / 10, humi_int % 10);
+            has_data = true;
+        }
+        xSemaphoreGive(s_udp_data_mutex);
+    }
+
+    if (!has_data) {
+        int temp_int = (int)(g_temperature * 10);
+        int humi_int = (int)(g_humidity * 10);
+        snprintf(sensor_json, sizeof(sensor_json),
+            "{\"node\":\"S3_Receiver\",\"odor\":0,\"hcho\":0,\"co\":0,"
+            "\"voc\":8.5,\"co2\":600,\"pred\":0,\"class\":\"unknown\",\"conf\":0,"
+            "\"fresh\":0,\"temp\":%d.%d,\"humi\":%d.%d}",
+            temp_int / 10, temp_int % 10,
+            humi_int / 10, humi_int % 10);
+    }
+
+    esp_err_t err = electronic_nose_gateway_trigger_analysis(sensor_json, strlen(sensor_json));
+    if (err == ESP_OK) {
+        lv_label_set_text(ai_analyze_btn_label, "Analyzing...");
+        lv_obj_set_style_bg_color(ai_analyze_btn, lv_color_hex(0x7A5C00), 0);
+        lv_obj_add_state(ai_analyze_btn, LV_STATE_DISABLED);
+    }
+}
+
+static void ai_dialog_close_cb(lv_event_t * e) {
+    if (ai_result_dialog) {
+        lv_obj_del(ai_result_dialog);
+        ai_result_dialog = NULL;
+        s_ai_dialog_open = false;
+    }
+    lv_obj_clear_state(ai_analyze_btn, LV_STATE_DISABLED);
+    lv_label_set_text(ai_analyze_btn_label, "AI Analysis");
+    lv_obj_set_style_bg_color(ai_analyze_btn, lv_color_hex(0x4AA3FF), 0);
+}
+
+static void create_ai_result_dialog(const char * result) {
+    if (s_ai_dialog_open) return;
+    s_ai_dialog_open = true;
+
+    ai_result_dialog = lv_obj_create(lv_layer_top());
+    apply_no_shadow(ai_result_dialog);
+    lv_obj_set_size(ai_result_dialog, 940, 540);
+    lv_obj_center(ai_result_dialog);
+    lv_obj_set_style_bg_color(ai_result_dialog, lv_color_hex(0x0B1020), 0);
+    lv_obj_set_style_bg_opa(ai_result_dialog, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(ai_result_dialog, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_set_style_border_width(ai_result_dialog, 2, 0);
+    lv_obj_set_style_radius(ai_result_dialog, 18, 0);
+
+    lv_obj_t * title = lv_label_create(ai_result_dialog);
+    lv_label_set_text(title, "AI Analysis Result");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 14);
+
+    lv_obj_t * close_btn = lv_btn_create(ai_result_dialog);
+    lv_obj_set_size(close_btn, 80, 36);
+    lv_obj_align(close_btn, LV_ALIGN_TOP_RIGHT, -14, 12);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(close_btn, 10, 0);
+    lv_obj_t * close_lbl = lv_label_create(close_btn);
+    lv_label_set_text(close_lbl, "Close");
+    lv_obj_center(close_lbl);
+    lv_obj_set_style_text_color(close_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_add_event_cb(close_btn, ai_dialog_close_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * text_area = lv_obj_create(ai_result_dialog);
+    apply_no_shadow(text_area);
+    lv_obj_set_size(text_area, 890, 440);
+    lv_obj_align(text_area, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(text_area, lv_color_hex(0x151C30), 0);
+    lv_obj_set_style_border_color(text_area, lv_color_hex(0x26324A), 0);
+    lv_obj_set_style_border_width(text_area, 1, 0);
+    lv_obj_set_style_radius(text_area, 12, 0);
+    lv_obj_set_flex_flow(text_area, LV_FLEX_FLOW_COLUMN);
+
+    ai_result_dialog_text = lv_label_create(text_area);
+    lv_label_set_text(ai_result_dialog_text, result ? result : "(empty)");
+    lv_label_set_long_mode(ai_result_dialog_text, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(ai_result_dialog_text, 850);
+    lv_obj_set_style_text_font(ai_result_dialog_text, &s_font_cjk_fallback, 0);
+    lv_obj_set_style_text_color(ai_result_dialog_text, lv_color_hex(0xE6ECF5), 0);
+    lv_obj_set_style_text_line_space(ai_result_dialog_text, 4, 0);
+}
+
+void ui_show_ai_analysis(const char* result) {
+    if (!result) return;
+    strlcpy(s_ai_result_buffer, result, sizeof(s_ai_result_buffer));
+
+    esp_err_t lock_ret = esp_lv_adapter_lock(pdMS_TO_TICKS(1000));
+    if (lock_ret == ESP_OK) {
+        create_ai_result_dialog(s_ai_result_buffer);
+        esp_lv_adapter_unlock();
+    }
+}
+
+void ui_handle_sensor_data(const ble_sensor_data_t *data) {
+    if (!data || !s_udp_data_mutex) return;
+
+    if (xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        udp_node_data_t *target = NULL;
+        bool is_s3_receiver = (strcmp(data->node, "S3_Receiver") == 0);
+        if (is_s3_receiver || strcmp(data->node, "S3_A") == 0 || strcmp(data->node, "S3A") == 0 || strcmp(data->node, "Node S3-A") == 0) {
+            target = &s_udp_node1;
+        } else if (strcmp(data->node, "S3_B") == 0 || strcmp(data->node, "S3B") == 0 || strcmp(data->node, "Node S3-B") == 0) {
+            target = &s_udp_node2;
+        }
+        if (target) {
+            target->valid = true;
+            target->temp = data->temp;
+            target->hum = data->hum;
+            target->odor = data->odor;
+            target->hcho = data->hcho;
+            target->co = data->co;
+            target->voc = data->voc;
+            target->co2 = data->co2;
+            target->pred = data->pred;
+            strncpy(target->sensor_class, data->sensor_class, sizeof(target->sensor_class) - 1);
+            target->conf = data->conf;
+            target->fresh = data->fresh;
+            target->uv = data->uv;
+            target->uv_auto = data->uv_auto;
+            target->uv_remain = data->uv_remain;
+            target->uv_dur = data->uv_dur;
+        }
+        xSemaphoreGive(s_udp_data_mutex);
+    }
+    /* Sync UV button when C6 reports UV state */
+    lv_async_call(uv_update_ui_cb, (void *)(intptr_t)data->uv);
+}
+
+void ui_get_node1_data(ui_sensor_data_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (s_udp_data_mutex && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        out->valid = s_udp_node1.valid;
+        out->temp = s_udp_node1.temp;
+        out->hum = s_udp_node1.hum;
+        out->odor = s_udp_node1.odor;
+        out->hcho = s_udp_node1.hcho;
+        out->co = s_udp_node1.co;
+        out->voc = s_udp_node1.voc;
+        out->co2 = s_udp_node1.co2;
+        out->pred = s_udp_node1.pred;
+        strncpy(out->sensor_class, s_udp_node1.sensor_class, sizeof(out->sensor_class) - 1);
+        out->conf = s_udp_node1.conf;
+        out->fresh = s_udp_node1.fresh;
+        out->uv = s_udp_node1.uv;
+        xSemaphoreGive(s_udp_data_mutex);
+    }
+}
+
+void ui_set_uv(bool on)
+{
+    if (s_udp_data_mutex && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        s_udp_node1.uv = on;
+        xSemaphoreGive(s_udp_data_mutex);
+    }
+    lv_async_call(uv_update_ui_cb, (void *)(intptr_t)on);
+}
+
+void ui_handle_warmup(int remaining)
+{
+    LV_UNUSED(remaining);
+    /* Warmup label is updated in fake_data_timer_cb via uart_receiver_get_warmup_remaining() */
+}
+
+void ui_send_c6_command(const char *cmd)
+{
+    uart_receiver_send(cmd);
+}
+
+void ui_get_node2_data(ui_sensor_data_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (s_udp_data_mutex && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        out->valid = s_udp_node2.valid;
+        out->temp = s_udp_node2.temp;
+        out->hum = s_udp_node2.hum;
+        out->odor = s_udp_node2.odor;
+        out->hcho = s_udp_node2.hcho;
+        out->co = s_udp_node2.co;
+        out->voc = s_udp_node2.voc;
+        out->co2 = s_udp_node2.co2;
+        out->pred = s_udp_node2.pred;
+        strncpy(out->sensor_class, s_udp_node2.sensor_class, sizeof(out->sensor_class) - 1);
+        out->conf = s_udp_node2.conf;
+        out->fresh = s_udp_node2.fresh;
+        out->uv = s_udp_node2.uv;
+        xSemaphoreGive(s_udp_data_mutex);
+    }
+}
+
+const char* ui_get_ai_result(void) {
+    return s_ai_result_buffer;
+}
+#endif
+
+/* ========================================================================
+ * DASHBOARD UI
+ * ======================================================================== */
+
+static lv_obj_t * vol_slider;
+static lv_obj_t * vol_label;
+static lv_obj_t * btn_qr_entry;
+
+static int current_volume = 80;
+
+static const lv_color_t COLOR_BG = lv_color_hex(0x0B1020);
+static const lv_color_t COLOR_PANEL = lv_color_hex(0x151C30);
+static const lv_color_t COLOR_PANEL_ALT = lv_color_hex(0x10182A);
+static const lv_color_t COLOR_BORDER = lv_color_hex(0x26324A);
+static const lv_color_t COLOR_TEXT = lv_color_hex(0xE6ECF5);
+static const lv_color_t COLOR_MUTED = lv_color_hex(0x91A0B8);
+static const lv_color_t COLOR_ACCENT = lv_color_hex(0x4AA3FF);
+static const lv_color_t COLOR_SUCCESS = lv_color_hex(0x39D98A);
+static const lv_color_t COLOR_WARNING = lv_color_hex(0xFFB84D);
+
+
+
+static void update_volume_ui(int vol, bool sync_sliders) {
+    current_volume = vol;
+    if (vol_label) {
+        lv_label_set_text_fmt(vol_label, "%d%%", vol);
+    }
+    if (cc_volume_label) {
+        lv_label_set_text_fmt(cc_volume_label, "%d%%", vol);
+    }
+    if (sync_sliders) {
+        if (vol_slider) {
+            lv_slider_set_value(vol_slider, vol, LV_ANIM_OFF);
+        }
+        if (cc_volume_slider) {
+            lv_slider_set_value(cc_volume_slider, vol, LV_ANIM_OFF);
+        }
+    }
+}
+
+static void set_wifi_status_text(const char * text, lv_color_t color) {
+    if (wifi_status_label) {
+        lv_label_set_text(wifi_status_label, text);
+        lv_obj_set_style_text_color(wifi_status_label, color, 0);
+    }
+    if (cc_wifi_status_label) {
+        const char * cc_text = text;
+        if (strncmp(text, "WiFi: ", 6) == 0) {
+            cc_text = text + 6;
+        }
+        lv_label_set_text(cc_wifi_status_label, cc_text);
+        lv_obj_set_style_text_color(cc_wifi_status_label, color, 0);
+    }
+    // 动态 Wi-Fi 卡片发光边框
+    if (wifi_tile) {
+        bool active = (strstr(text, "Disconnected") == NULL);
+        lv_obj_set_style_border_color(wifi_tile, active ? color : lv_color_hex(0x2A3A5A), 0);
+        lv_obj_set_style_border_width(wifi_tile, active ? 2 : 1, 0);
+    }
+}
+
+static void cc_set_y(void * obj, int32_t y) {
+    lv_obj_set_y((lv_obj_t *)obj, y);
+}
+
+static void anim_cc_ready_cb(lv_anim_t * a) {
+    cc_is_open = (lv_obj_get_y(cc_overlay) > -100);
+}
+
+static void close_control_center(void) {
+    if (!cc_overlay || !cc_is_open) {
+        return;
+    }
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, cc_overlay);
+    lv_anim_set_exec_cb(&a, cc_set_y);
+    lv_anim_set_values(&a, lv_obj_get_y(cc_overlay), -560);
+    lv_anim_set_time(&a, 350);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+    lv_anim_set_ready_cb(&a, anim_cc_ready_cb);
+    lv_anim_start(&a);
+}
+
+static void open_control_center(void) {
+    if (!cc_overlay || cc_is_open) {
+        return;
+    }
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, cc_overlay);
+    lv_anim_set_exec_cb(&a, cc_set_y);
+    lv_anim_set_values(&a, lv_obj_get_y(cc_overlay), 20);
+    lv_anim_set_time(&a, 400);
+    lv_anim_set_path_cb(&a, lv_anim_path_overshoot);
+    lv_anim_set_ready_cb(&a, anim_cc_ready_cb);
+    lv_anim_start(&a);
+}
+
+static void cc_close_btn_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    close_control_center();
+}
+
+// Removed press animations to ensure stability
+
+static void delayed_wifi_open_cb(lv_timer_t * t) {
+    btn_open_wifi_cb(NULL);
+    lv_timer_delete(t);
+}
+
+static void cc_wifi_tile_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    close_control_center();
+    // Delay opening the Wi-Fi scan to avoid overlapping with the sliding animation,
+    // which causes the UI thread to freeze.
+    lv_timer_create(delayed_wifi_open_cb, 400, NULL);
+}
+
+static void cc_brightness_slider_cb(lv_event_t * e) {
+    lv_obj_t * slider = (lv_obj_t *)lv_event_get_target(e);
+    int brightness = (int)lv_slider_get_value(slider);
+    bsp_display_brightness_set(brightness);
+}
+
+static void apps_drawer_anim_cb(void * obj, int32_t x) {
+    lv_obj_set_x((lv_obj_t *)obj, x);
+}
+
+static void toggle_apps_drawer(bool open) {
+    if (open == apps_drawer_open) return;
+    apps_drawer_open = open;
+    int32_t target_x = open ? 824 : 1024;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, apps_panel);
+    lv_anim_set_exec_cb(&a, apps_drawer_anim_cb);
+    lv_anim_set_values(&a, lv_obj_get_x(apps_panel), target_x);
+    lv_anim_set_time(&a, 250);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+}
+
+static void main_screen_event_cb(lv_event_t * e) {
+    if (lv_event_get_code(e) != LV_EVENT_GESTURE) {
+        return;
+    }
+
+    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+    if (dir == LV_DIR_BOTTOM) {
+        open_control_center();
+    } else if (dir == LV_DIR_TOP) {
+        close_control_center();
+    } else if (dir == LV_DIR_LEFT) {
+        toggle_apps_drawer(true);
+    } else if (dir == LV_DIR_RIGHT) {
+        if (apps_drawer_open) {
+            toggle_apps_drawer(false);
+        }
+    }
+}
+
+static void cc_upload_tile_cb(lv_event_t * e) {
+    LV_UNUSED(e);
+    bool now = !cloud_sync_is_enabled();
+    cloud_sync_set_enabled(now);
+    lv_obj_set_style_bg_color(sync_status_dot, now ? lv_color_hex(0x39D98A) : lv_color_hex(0x666666), 0);
+    lv_label_set_text(sync_status_label, now ? "1s Sync" : "Off");
+    lv_obj_set_style_text_color(sync_status_label, now ? lv_color_hex(0x39D98A) : lv_color_hex(0x91A0B8), 0);
+    if (sync_tile) {
+        lv_obj_set_style_border_color(sync_tile, now ? lv_color_hex(0xFFB84D) : lv_color_hex(0x2A3A5A), 0);
+        lv_obj_set_style_border_width(sync_tile, now ? 2 : 1, 0);
+    }
+}
+
+static void control_center_init(lv_obj_t * parent) {
+    cc_overlay = lv_obj_create(parent);
+    apply_no_shadow(cc_overlay);
+    lv_obj_set_size(cc_overlay, 980, 520);
+    lv_obj_align(cc_overlay, LV_ALIGN_TOP_MID, 0, -560);
+    lv_obj_set_style_bg_color(cc_overlay, lv_color_hex(0x1C1C1E), 0);
+    lv_obj_set_style_bg_opa(cc_overlay, LV_OPA_70, 0);
+    lv_obj_set_style_border_color(cc_overlay, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(cc_overlay, 1, 0);
+    lv_obj_set_style_radius(cc_overlay, 28, 0);
+    lv_obj_clear_flag(cc_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * title = lv_label_create(cc_overlay);
+    lv_label_set_text(title, "Control Center");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, COLOR_TEXT, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 36, 24);
+
+    lv_obj_t * handle = lv_obj_create(cc_overlay);
+    apply_no_shadow(handle);
+    lv_obj_set_size(handle, 120, 6);
+    lv_obj_align(handle, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_set_style_bg_color(handle, lv_color_hex(0x596273), 0);
+    lv_obj_set_style_bg_opa(handle, LV_OPA_70, 0);
+    lv_obj_set_style_radius(handle, 3, 0);
+    lv_obj_clear_flag(handle, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* ===== Left Column ===== */
+
+    /* WiFi tile */
+    wifi_tile = lv_obj_create(cc_overlay);
+    apply_no_shadow(wifi_tile);
+    lv_obj_set_size(wifi_tile, 180, 96);
+    lv_obj_align(wifi_tile, LV_ALIGN_TOP_LEFT, 36, 78);
+    lv_obj_set_style_bg_color(wifi_tile, lv_color_hex(0x111930), 0);
+    lv_obj_set_style_bg_opa(wifi_tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(wifi_tile, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(wifi_tile, 1, 0);
+    lv_obj_set_style_radius(wifi_tile, 24, 0);
+    lv_obj_clear_flag(wifi_tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(wifi_tile, cc_wifi_tile_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * wifi_icon = lv_label_create(wifi_tile);
+    lv_label_set_text(wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_font(wifi_icon, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(wifi_icon, COLOR_ACCENT, 0);
+    lv_obj_align(wifi_icon, LV_ALIGN_TOP_LEFT, 16, 14);
+
+    lv_obj_t * wifi_label_title = lv_label_create(wifi_tile);
+    lv_label_set_text(wifi_label_title, "Wi-Fi");
+    lv_obj_set_style_text_font(wifi_label_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(wifi_label_title, COLOR_TEXT, 0);
+    lv_obj_align(wifi_label_title, LV_ALIGN_TOP_LEFT, 54, 16);
+
+    cc_wifi_status_label = lv_label_create(wifi_tile);
+    lv_label_set_text(cc_wifi_status_label, "Disconnected");
+    lv_obj_set_style_text_font(cc_wifi_status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(cc_wifi_status_label, COLOR_MUTED, 0);
+    lv_obj_align(cc_wifi_status_label, LV_ALIGN_TOP_LEFT, 54, 42);
+
+    lv_obj_t * wifi_hint = lv_label_create(wifi_tile);
+    lv_label_set_text(wifi_hint, "Tap to scan");
+    lv_obj_set_style_text_font(wifi_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(wifi_hint, lv_color_hex(0x4A5A7A), 0);
+    lv_obj_align(wifi_hint, LV_ALIGN_BOTTOM_LEFT, 16, -12);
+
+    /* C6 Bridge tile */
+    c6_tile = lv_obj_create(cc_overlay);
+    apply_no_shadow(c6_tile);
+    lv_obj_set_size(c6_tile, 180, 96);
+    lv_obj_align(c6_tile, LV_ALIGN_TOP_LEFT, 36, 188);
+    lv_obj_set_style_bg_color(c6_tile, lv_color_hex(0x111930), 0);
+    lv_obj_set_style_bg_opa(c6_tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(c6_tile, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(c6_tile, 1, 0);
+    lv_obj_set_style_radius(c6_tile, 24, 0);
+    lv_obj_clear_flag(c6_tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(c6_tile, [](lv_event_t * e) {
+        ESP_LOGI("UI", "C6 Tile clicked");
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * c6_icon = lv_label_create(c6_tile);
+    lv_label_set_text(c6_icon, LV_SYMBOL_USB);
+    lv_obj_set_style_text_font(c6_icon, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(c6_icon, lv_color_hex(0x03DAC6), 0);
+    lv_obj_align(c6_icon, LV_ALIGN_TOP_LEFT, 16, 14);
+
+    lv_obj_t * c6_label_title = lv_label_create(c6_tile);
+    lv_label_set_text(c6_label_title, "C6 Bridge");
+    lv_obj_set_style_text_font(c6_label_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(c6_label_title, COLOR_TEXT, 0);
+    lv_obj_align(c6_label_title, LV_ALIGN_TOP_LEFT, 54, 16);
+
+    c6_status_label = lv_label_create(c6_tile);
+    lv_label_set_text(c6_status_label, "Connecting...");
+    lv_obj_set_style_text_font(c6_status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(c6_status_label, COLOR_MUTED, 0);
+    lv_obj_align(c6_status_label, LV_ALIGN_TOP_LEFT, 54, 42);
+
+    c6_status_dot = lv_obj_create(c6_tile);
+    apply_no_shadow(c6_status_dot);
+    lv_obj_set_size(c6_status_dot, 10, 10);
+    lv_obj_align(c6_status_dot, LV_ALIGN_BOTTOM_LEFT, 16, -14);
+    lv_obj_set_style_bg_color(c6_status_dot, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_bg_opa(c6_status_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(c6_status_dot, 5, 0);
+    lv_obj_clear_flag(c6_status_dot, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * c6_hint = lv_label_create(c6_tile);
+    lv_label_set_text(c6_hint, "UART 115200");
+    lv_obj_set_style_text_font(c6_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(c6_hint, lv_color_hex(0x4A5A7A), 0);
+    lv_obj_align(c6_hint, LV_ALIGN_BOTTOM_LEFT, 34, -14);
+
+    /* Cloud Sync toggle tile */
+    sync_tile = lv_obj_create(cc_overlay);
+    apply_no_shadow(sync_tile);
+    lv_obj_set_size(sync_tile, 180, 96);
+    lv_obj_align(sync_tile, LV_ALIGN_TOP_LEFT, 36, 298);
+    lv_obj_set_style_bg_color(sync_tile, lv_color_hex(0x111930), 0);
+    lv_obj_set_style_bg_opa(sync_tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(sync_tile, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(sync_tile, 1, 0);
+    lv_obj_set_style_radius(sync_tile, 24, 0);
+    lv_obj_clear_flag(sync_tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(sync_tile, cc_upload_tile_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * sync_icon = lv_label_create(sync_tile);
+    lv_label_set_text(sync_icon, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_font(sync_icon, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(sync_icon, lv_color_hex(0xFFB84D), 0);
+    lv_obj_align(sync_icon, LV_ALIGN_TOP_LEFT, 16, 14);
+
+    lv_obj_t * sync_label_title = lv_label_create(sync_tile);
+    lv_label_set_text(sync_label_title, "Cloud Sync");
+    lv_obj_set_style_text_font(sync_label_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(sync_label_title, COLOR_TEXT, 0);
+    lv_obj_align(sync_label_title, LV_ALIGN_TOP_LEFT, 54, 16);
+
+    sync_status_label = lv_label_create(sync_tile);
+    lv_label_set_text(sync_status_label, "Off");
+    lv_obj_set_style_text_font(sync_status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(sync_status_label, lv_color_hex(0x91A0B8), 0);
+    lv_obj_align(sync_status_label, LV_ALIGN_TOP_LEFT, 54, 42);
+
+    sync_status_dot = lv_obj_create(sync_tile);
+    apply_no_shadow(sync_status_dot);
+    lv_obj_set_size(sync_status_dot, 10, 10);
+    lv_obj_align(sync_status_dot, LV_ALIGN_BOTTOM_LEFT, 16, -14);
+    lv_obj_set_style_bg_color(sync_status_dot, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_bg_opa(sync_status_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(sync_status_dot, 5, 0);
+    lv_obj_clear_flag(sync_status_dot, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * sync_hint = lv_label_create(sync_tile);
+    lv_label_set_text(sync_hint, "5s/1s interval");
+    lv_obj_set_style_text_font(sync_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(sync_hint, lv_color_hex(0x4A5A7A), 0);
+    lv_obj_align(sync_hint, LV_ALIGN_BOTTOM_LEFT, 34, -14);
+
+    /* ===== Right Column ===== */
+
+    /* Brightness tile */
+    lv_obj_t * bright_tile = lv_obj_create(cc_overlay);
+    apply_no_shadow(bright_tile);
+    lv_obj_set_size(bright_tile, 680, 100);
+    lv_obj_align(bright_tile, LV_ALIGN_TOP_LEFT, 264, 78);
+    lv_obj_set_style_bg_color(bright_tile, lv_color_hex(0x141E3A), 0);
+    lv_obj_set_style_bg_opa(bright_tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(bright_tile, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(bright_tile, 1, 0);
+    lv_obj_set_style_radius(bright_tile, 18, 0);
+    lv_obj_clear_flag(bright_tile, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * bright_icon = lv_label_create(bright_tile);
+    lv_label_set_text(bright_icon, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_font(bright_icon, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(bright_icon, lv_color_hex(0xFFCC00), 0);
+    lv_obj_align(bright_icon, LV_ALIGN_LEFT_MID, 18, 0);
+
+    lv_obj_t * bright_label = lv_label_create(bright_tile);
+    lv_label_set_text(bright_label, "Brightness");
+    lv_obj_set_style_text_font(bright_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(bright_label, COLOR_TEXT, 0);
+    lv_obj_align(bright_label, LV_ALIGN_LEFT_MID, 52, -14);
+
+    cc_brightness_slider = lv_slider_create(bright_tile);
+    lv_obj_set_size(cc_brightness_slider, 520, 10);  // 缩窄至 10px 极其轻盈！
+    lv_obj_align(cc_brightness_slider, LV_ALIGN_RIGHT_MID, -22, 0);
+    lv_slider_set_range(cc_brightness_slider, 10, 100);
+    lv_slider_set_value(cc_brightness_slider, 80, LV_ANIM_OFF);
+    // 主轨道样式
+    lv_obj_set_style_bg_color(cc_brightness_slider, lv_color_hex(0x192543), LV_PART_MAIN);
+    lv_obj_set_style_radius(cc_brightness_slider, 5, LV_PART_MAIN);
+    // 进度条样式（暖金太阳色）
+    lv_obj_set_style_bg_color(cc_brightness_slider, lv_color_hex(0xFFB800), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(cc_brightness_slider, 5, LV_PART_INDICATOR);
+    // 苹果微悬浮 Knob（白色圆形）
+    lv_obj_set_style_bg_color(cc_brightness_slider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
+    lv_obj_set_style_radius(cc_brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_set_style_opa(cc_brightness_slider, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(cc_brightness_slider, 4, LV_PART_KNOB); // 让旋钮微大于轨道
+    lv_obj_add_event_cb(cc_brightness_slider, cc_brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Volume tile */
+    lv_obj_t * volume_tile = lv_obj_create(cc_overlay);
+    apply_no_shadow(volume_tile);
+    lv_obj_set_size(volume_tile, 680, 100);
+    lv_obj_align(volume_tile, LV_ALIGN_TOP_LEFT, 264, 194);
+    lv_obj_set_style_bg_color(volume_tile, lv_color_hex(0x141E3A), 0);
+    lv_obj_set_style_bg_opa(volume_tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(volume_tile, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(volume_tile, 1, 0);
+    lv_obj_set_style_radius(volume_tile, 18, 0);
+    lv_obj_clear_flag(volume_tile, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * volume_icon = lv_label_create(volume_tile);
+    lv_label_set_text(volume_icon, LV_SYMBOL_VOLUME_MAX);
+    lv_obj_set_style_text_font(volume_icon, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(volume_icon, lv_color_hex(0x03DAC6), 0);
+    lv_obj_align(volume_icon, LV_ALIGN_LEFT_MID, 18, 0);
+
+    lv_obj_t * volume_label = lv_label_create(volume_tile);
+    lv_label_set_text(volume_label, "Volume");
+    lv_obj_set_style_text_font(volume_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(volume_label, COLOR_TEXT, 0);
+    lv_obj_align(volume_label, LV_ALIGN_LEFT_MID, 52, -14);
+
+    cc_volume_slider = lv_slider_create(volume_tile);
+    lv_obj_set_size(cc_volume_slider, 450, 10);  // 缩窄至 10px 极其轻盈！
+    lv_obj_align(cc_volume_slider, LV_ALIGN_RIGHT_MID, -60, 0);
+    lv_slider_set_range(cc_volume_slider, 0, 100);
+    // 主轨道样式
+    lv_obj_set_style_bg_color(cc_volume_slider, lv_color_hex(0x192543), LV_PART_MAIN);
+    lv_obj_set_style_radius(cc_volume_slider, 5, LV_PART_MAIN);
+    // 进度条样式（极光纯青绿）
+    lv_obj_set_style_bg_color(cc_volume_slider, lv_color_hex(0x03DAC6), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(cc_volume_slider, 5, LV_PART_INDICATOR);
+    // 苹果微悬浮 Knob（白色圆形）
+    lv_obj_set_style_bg_color(cc_volume_slider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
+    lv_obj_set_style_radius(cc_volume_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_set_style_opa(cc_volume_slider, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(cc_volume_slider, 4, LV_PART_KNOB); // 让旋钮微大于轨道
+    lv_obj_add_event_cb(cc_volume_slider, vol_slider_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    cc_volume_label = lv_label_create(volume_tile);
+    lv_label_set_text(cc_volume_label, "80%");
+    lv_obj_set_style_text_font(cc_volume_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(cc_volume_label, lv_color_hex(0x03DAC6), 0);
+    lv_obj_align(cc_volume_label, LV_ALIGN_RIGHT_MID, -14, 0);
+
+    /* Wallpaper tile */
+    lv_obj_t * wallpaper_tile = lv_obj_create(cc_overlay);
+    apply_no_shadow(wallpaper_tile);
+    lv_obj_set_size(wallpaper_tile, 680, 72);
+    lv_obj_align(wallpaper_tile, LV_ALIGN_TOP_LEFT, 264, 294);
+    lv_obj_set_style_bg_color(wallpaper_tile, lv_color_hex(0x141E3A), 0);
+    lv_obj_set_style_bg_opa(wallpaper_tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(wallpaper_tile, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_set_style_border_width(wallpaper_tile, 1, 0);
+    lv_obj_set_style_radius(wallpaper_tile, 24, 0);
+    lv_obj_clear_flag(wallpaper_tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(wallpaper_tile, [](lv_event_t * e) {
+        s_wallpaper_target = WALLPAPER_TARGET_MAIN;
+        open_wallpaper_list();
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * wp_icon = lv_label_create(wallpaper_tile);
+    lv_label_set_text(wp_icon, LV_SYMBOL_IMAGE);
+    lv_obj_set_style_text_font(wp_icon, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(wp_icon, lv_color_hex(0xC084FC), 0);
+    lv_obj_align(wp_icon, LV_ALIGN_LEFT_MID, 18, 0);
+
+    lv_obj_t * wp_label = lv_label_create(wallpaper_tile);
+    lv_label_set_text(wp_label, "Wallpaper");
+    lv_obj_set_style_text_font(wp_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(wp_label, COLOR_TEXT, 0);
+    lv_obj_align(wp_label, LV_ALIGN_LEFT_MID, 52, -14);
+
+    lv_obj_t * wp_hint = lv_label_create(wallpaper_tile);
+    lv_label_set_text(wp_hint, "Tap to change");
+    lv_obj_set_style_text_font(wp_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(wp_hint, COLOR_MUTED, 0);
+    lv_obj_align(wp_hint, LV_ALIGN_LEFT_MID, 52, 16);
+
+    lv_obj_t * footer = lv_label_create(cc_overlay);
+    lv_label_set_text(footer, "Swipe up to close");
+    lv_obj_set_style_text_font(footer, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(footer, lv_color_hex(0x4A5A7A), 0);
+    lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -18);
+
+    update_volume_ui(current_volume, true);
+    set_wifi_status_text("WiFi: Disconnected", lv_color_hex(0xAAAAAA));
+}
+
+
+void ui_init(void) {
+    /* Initialize CJK font fallback (Montserrat + Custom Comprehensive CJK Font) */
+    memcpy(&s_font_cjk_fallback, &lv_font_montserrat_14, sizeof(lv_font_t));
+    s_font_cjk_fallback.fallback = &ui_font_xiaozhi_14;
+
+    /* Initialize global no-shadow style ONCE */
+    lv_style_init(&g_style_no_shadow);
+    lv_style_set_shadow_width(&g_style_no_shadow, 0);
+    lv_style_set_shadow_spread(&g_style_no_shadow, 0);
+    lv_style_set_shadow_ofs_x(&g_style_no_shadow, 0);
+    lv_style_set_shadow_ofs_y(&g_style_no_shadow, 0);
+
+    /* Apply to root screens */
+    lv_obj_add_style(lv_scr_act(), &g_style_no_shadow, 0);
+
+    /* Initialize SD card for wallpaper (used by both startup and main screens) */
+    sd_card_bg_init();
+
+    /* ====================================================================
+     * 1. STARTUP SCREEN
+     * ==================================================================== */
+    scr_startup = lv_obj_create(NULL);
+    apply_no_shadow(scr_startup);
+    lv_obj_set_style_bg_color(scr_startup, COLOR_BG, 0);
+    lv_obj_set_style_bg_opa(scr_startup, LV_OPA_COVER, 0);
+
+    /* Create persistent wallpaper image object at background */
+    s_startup_wallpaper_img = lv_image_create(scr_startup);
+    lv_obj_set_pos(s_startup_wallpaper_img, 0, 0);
+    lv_obj_set_size(s_startup_wallpaper_img, 1024, 600);
+    lv_obj_move_background(s_startup_wallpaper_img);
+
+    /* Load startup wallpaper (slot 0) */
+    if (sd_card_bg_is_ready()) {
+        char saved_path[128] = {};
+        const char *wp_path = "/sdcard/bg.jpg";
+        if (load_startup_wallpaper_path(saved_path, sizeof(saved_path))) {
+            wp_path = saved_path;
+        }
+        const lv_image_dsc_t *img = sd_card_bg_load_jpeg_slot(wp_path, 0);
+        if (img) {
+            lv_image_set_src(s_startup_wallpaper_img, img);
+            strncpy(s_current_startup_wallpaper_path, wp_path, sizeof(s_current_startup_wallpaper_path) - 1);
+            ESP_LOGI("UI", "Startup wallpaper loaded: %s", wp_path);
+        } else {
+            ESP_LOGW("UI", "Failed to load startup wallpaper: %s", wp_path);
+        }
+    }
+
+    /* ====================================================================
+     * 1.2 SYSTEM NEON ART TEXT "AI & ELEC"
+     * ==================================================================== */
+    s_neon_container = lv_obj_create(scr_startup);
+    apply_no_shadow(s_neon_container);
+    lv_obj_set_size(s_neon_container, 800, 180);
+    lv_obj_align(s_neon_container, LV_ALIGN_CENTER, 0, -60);
+    lv_obj_set_style_bg_opa(s_neon_container, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(s_neon_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    // 1. 最外层粉紫发光 (Neon Aura)
+    s_neon_aura = lv_label_create(s_neon_container);
+    lv_label_set_text(s_neon_aura, "AI FOR DESIGN");
+    lv_obj_set_style_text_color(s_neon_aura, lv_color_hex(0xFF00FF), 0);
+    lv_obj_set_style_text_font(s_neon_aura, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_opa(s_neon_aura, LV_OPA_40, 0);
+    lv_obj_center(s_neon_aura);
+
+    // 2. 中层冰蓝发光 (Neon Glow)
+    s_neon_glow = lv_label_create(s_neon_container);
+    lv_label_set_text(s_neon_glow, "AI FOR DESIGN");
+    lv_obj_set_style_text_color(s_neon_glow, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_text_font(s_neon_glow, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_opa(s_neon_glow, LV_OPA_60, 0);
+    lv_obj_center(s_neon_glow);
+
+    // 3. 顶层白色实体字 (Neon Core)
+    s_neon_core = lv_label_create(s_neon_container);
+    lv_label_set_text(s_neon_core, "AI FOR DESIGN");
+    lv_obj_set_style_text_color(s_neon_core, lv_color_hex(0xE0FFFF), 0);
+    lv_obj_set_style_text_font(s_neon_core, &lv_font_montserrat_48, 0);
+    lv_obj_center(s_neon_core);
+
+    lv_anim_t a_neon_glow;
+    lv_anim_init(&a_neon_glow);
+    lv_anim_set_var(&a_neon_glow, s_neon_glow);
+    lv_anim_set_values(&a_neon_glow, LV_OPA_30, LV_OPA_100);
+    lv_anim_set_duration(&a_neon_glow, 1200);
+    lv_anim_set_playback_duration(&a_neon_glow, 1200);
+    lv_anim_set_repeat_count(&a_neon_glow, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_exec_cb(&a_neon_glow, neon_anim_glow_cb);
+    lv_anim_start(&a_neon_glow);
+
+    lv_anim_t a_neon_aura;
+    lv_anim_init(&a_neon_aura);
+    lv_anim_set_var(&a_neon_aura, s_neon_aura);
+    lv_anim_set_values(&a_neon_aura, LV_OPA_10, LV_OPA_90);
+    lv_anim_set_duration(&a_neon_aura, 600);
+    lv_anim_set_playback_duration(&a_neon_aura, 600);
+    lv_anim_set_repeat_count(&a_neon_aura, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_exec_cb(&a_neon_aura, neon_anim_aura_cb);
+    lv_anim_start(&a_neon_aura);
+
+    lv_anim_t a_neon_glow_x;
+    lv_anim_init(&a_neon_glow_x);
+    lv_anim_set_var(&a_neon_glow_x, s_neon_glow);
+    lv_anim_set_values(&a_neon_glow_x, -10, 10);
+    lv_anim_set_duration(&a_neon_glow_x, 1500);
+    lv_anim_set_playback_duration(&a_neon_glow_x, 1500);
+    lv_anim_set_repeat_count(&a_neon_glow_x, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_exec_cb(&a_neon_glow_x, neon_anim_glow_x_cb);
+    lv_anim_start(&a_neon_glow_x);
+
+    lv_anim_t a_neon_aura_y;
+    lv_anim_init(&a_neon_aura_y);
+    lv_anim_set_var(&a_neon_aura_y, s_neon_aura);
+    lv_anim_set_values(&a_neon_aura_y, -6, 6);
+    lv_anim_set_duration(&a_neon_aura_y, 300);
+    lv_anim_set_playback_duration(&a_neon_aura_y, 300);
+    lv_anim_set_repeat_count(&a_neon_aura_y, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_exec_cb(&a_neon_aura_y, neon_anim_aura_y_cb);
+    lv_anim_start(&a_neon_aura_y);
+
+    btn_wifi = lv_btn_create(scr_startup);
+    lv_obj_set_size(btn_wifi, 260, 48);
+    lv_obj_align(btn_wifi, LV_ALIGN_BOTTOM_LEFT, 80, -40);
+    lv_obj_set_style_bg_color(btn_wifi, COLOR_PANEL, 0);
+    lv_obj_set_style_border_color(btn_wifi, COLOR_BORDER, 0);
+    // lv_obj_set_style_border_width(btn_wifi, 1, 0);  // DISABLED for crash diagnostic
+    lv_obj_set_style_radius(btn_wifi, 24, 0);
+    lv_obj_add_event_cb(btn_wifi, btn_open_wifi_cb, LV_EVENT_CLICKED, NULL);
+    wifi_status_label = lv_label_create(btn_wifi);
+    lv_label_set_text(wifi_status_label, "WiFi: Disconnected");
+    lv_obj_set_style_text_color(wifi_status_label, COLOR_TEXT, 0);
+    lv_obj_center(wifi_status_label);
+
+    lv_obj_t * btn_wallpaper = lv_btn_create(scr_startup);
+    lv_obj_set_size(btn_wallpaper, 260, 48);
+    lv_obj_align(btn_wallpaper, LV_ALIGN_BOTTOM_RIGHT, -80, -40);
+    lv_obj_set_style_bg_color(btn_wallpaper, COLOR_PANEL, 0);
+    lv_obj_set_style_border_color(btn_wallpaper, lv_color_hex(0xC084FC), 0);
+    // lv_obj_set_style_border_width(btn_wallpaper, 1, 0);  // DISABLED for crash diagnostic
+    lv_obj_set_style_radius(btn_wallpaper, 24, 0);
+    lv_obj_add_event_cb(btn_wallpaper, [](lv_event_t * e) {
+        s_wallpaper_target = WALLPAPER_TARGET_STARTUP;
+        open_wallpaper_list();
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * btn_wp_lbl = lv_label_create(btn_wallpaper);
+    lv_label_set_text(btn_wp_lbl, LV_SYMBOL_IMAGE " Wallpaper");
+    lv_obj_set_style_text_color(btn_wp_lbl, lv_color_hex(0xC084FC), 0);
+    lv_obj_center(btn_wp_lbl);
+
+    lv_obj_t * btn_enter = lv_btn_create(scr_startup);
+    lv_obj_set_size(btn_enter, 260, 48);
+    lv_obj_align(btn_enter, LV_ALIGN_BOTTOM_MID, 0, -40);
+    lv_obj_set_style_bg_color(btn_enter, COLOR_ACCENT, 0);
+    lv_obj_set_style_radius(btn_enter, 24, 0);
+    lv_obj_add_event_cb(btn_enter, btn_enter_event_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * btn_label = lv_label_create(btn_enter);
+    lv_label_set_text(btn_label, "Enter Dashboard");
+    lv_obj_set_style_text_color(btn_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(btn_label);
+
+    create_wifi_modals();
+    create_wallpaper_modal();
+
+    /* ====================================================================
+     * 1.5 SYSTEM CHECK STATUS CAPSULE (灵动岛) & BREATHING LED
+     * ==================================================================== */
+    build_island(scr_startup, &s_island);
+
+    /* Island border flow timer */
+    s_island_flow_timer = lv_timer_create(island_flow_timer_cb, 50, &s_island);
+
+    s_startup_check_index = 0;
+    s_startup_check_timer = lv_timer_create(startup_check_timer_cb, 2500, NULL);
+
+    /* ====================================================================
+     * 2. MAIN DASHBOARD - SD CARD BACKGROUND + MINIMAL UI
+     * ==================================================================== */
+    scr_main = lv_obj_create(NULL);
+    apply_no_shadow(scr_main);
+    lv_obj_set_style_bg_color(scr_main, COLOR_BG, 0);
+    lv_obj_set_style_bg_opa(scr_main, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr_main, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(scr_main, main_screen_event_cb, LV_EVENT_GESTURE, NULL);
+
+    /* Create persistent wallpaper image object at background */
+    s_wallpaper_img = lv_image_create(scr_main);
+    lv_obj_set_pos(s_wallpaper_img, 0, 0);
+    lv_obj_set_size(s_wallpaper_img, 1024, 600);
+    lv_obj_move_background(s_wallpaper_img);
+
+    /* Load SD card background image (slot 1) */
+    if (sd_card_bg_is_ready()) {
+        char saved_path[128] = "";
+        const char *wallpaper_path = "/sdcard/bg.jpg";
+        if (load_wallpaper_path(saved_path, sizeof(saved_path))) {
+            wallpaper_path = saved_path;
+        }
+        const lv_image_dsc_t *img = sd_card_bg_load_jpeg_slot(wallpaper_path, 1);
+        if (img) {
+            lv_image_set_src(s_wallpaper_img, img);
+            strncpy(s_current_wallpaper_path, wallpaper_path, sizeof(s_current_wallpaper_path) - 1);
+            ESP_LOGI("UI", "Main screen background loaded: %s", wallpaper_path);
+        } else {
+            ESP_LOGW("UI", "Failed to load wallpaper from SD card: %s", wallpaper_path);
+        }
+    } else {
+        ESP_LOGW("UI", "SD card init failed, using dark background");
+    }
+
+    /* Dynamic island (same as startup, lives on main screen) */
+    build_island(scr_main, &m_island);
+
+    /* Right side: Apps drawer (hidden, swipe left/right to open/close) */
+    apps_panel = lv_obj_create(scr_main);
+    apply_no_shadow(apps_panel);
+    lv_obj_set_size(apps_panel, 200, 340);
+    lv_obj_set_pos(apps_panel, 1024, 50);
+    lv_obj_set_style_bg_color(apps_panel, lv_color_hex(0x151C30), 0);
+    lv_obj_set_style_bg_opa(apps_panel, LV_OPA_90, 0);
+    lv_obj_set_style_border_color(apps_panel, COLOR_BORDER, 0);
+    lv_obj_set_style_radius(apps_panel, 24, 0);
+    lv_obj_set_style_border_width(apps_panel, 1, 0);
+    lv_obj_set_style_radius(apps_panel, 18, 0);
+    lv_obj_clear_flag(apps_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Drawer grip handle (always visible hint on right edge) */
+    lv_obj_t * grip = lv_obj_create(scr_main);
+    apply_no_shadow(grip);
+    lv_obj_set_size(grip, 8, 100);
+    lv_obj_set_pos(grip, 1016, 170);
+    lv_obj_set_style_bg_color(grip, lv_color_hex(0x596273), 0);
+    lv_obj_set_style_bg_opa(grip, LV_OPA_60, 0);
+    lv_obj_set_style_radius(grip, 4, 0);
+    lv_obj_clear_flag(grip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(grip, [](lv_event_t * e){ toggle_apps_drawer(true); }, LV_EVENT_CLICKED, NULL);
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t * dot = lv_obj_create(grip);
+        apply_no_shadow(dot);
+        lv_obj_set_size(dot, 3, 3);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(0x91A0B8), 0);
+        lv_obj_set_style_radius(dot, 2, 0);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(dot, LV_ALIGN_TOP_MID, 0, 20 + i * 30);
+    }
+
+    /* S3-A app icon */
+    lv_obj_t * s3a_app = lv_btn_create(apps_panel);
+    lv_obj_set_size(s3a_app, 80, 80);
+    lv_obj_set_pos(s3a_app, 16, 16);
+    lv_obj_set_style_bg_color(s3a_app, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(s3a_app, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_set_style_border_width(s3a_app, 2, 0);
+    lv_obj_set_style_radius(s3a_app, 18, 0);
+    lv_obj_add_event_cb(s3a_app, [](lv_event_t * e){ lv_screen_load(scr_s3a); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * s3a_sym = lv_label_create(s3a_app);
+    lv_label_set_text(s3a_sym, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_font(s3a_sym, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s3a_sym, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_align(s3a_sym, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_t * s3a_label = lv_label_create(s3a_app);
+    lv_label_set_text(s3a_label, "S3-A");
+    lv_obj_set_style_text_color(s3a_label, COLOR_TEXT, 0);
+    lv_obj_align(s3a_label, LV_ALIGN_BOTTOM_MID, 0, -8);
+
+    /* S3-B app icon */
+    lv_obj_t * s3b_app = lv_btn_create(apps_panel);
+    lv_obj_set_size(s3b_app, 80, 80);
+    lv_obj_set_pos(s3b_app, 104, 16);
+    lv_obj_set_style_bg_color(s3b_app, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(s3b_app, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_set_style_border_width(s3b_app, 2, 0);
+    lv_obj_set_style_radius(s3b_app, 18, 0);
+    lv_obj_add_event_cb(s3b_app, [](lv_event_t * e){ lv_screen_load(scr_s3b); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * s3b_sym = lv_label_create(s3b_app);
+    lv_label_set_text(s3b_sym, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_font(s3b_sym, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s3b_sym, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_align(s3b_sym, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_t * s3b_label = lv_label_create(s3b_app);
+    lv_label_set_text(s3b_label, "S3-B");
+    lv_obj_set_style_text_color(s3b_label, COLOR_TEXT, 0);
+    lv_obj_align(s3b_label, LV_ALIGN_BOTTOM_MID, 0, -8);
+
+    /* Camera app icon */
+    btn_qr_entry = lv_btn_create(apps_panel);
+    lv_obj_set_size(btn_qr_entry, 80, 80);
+    lv_obj_set_pos(btn_qr_entry, 16, 112);
+    lv_obj_set_style_bg_color(btn_qr_entry, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(btn_qr_entry, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_set_style_border_width(btn_qr_entry, 2, 0);
+    lv_obj_set_style_radius(btn_qr_entry, 18, 0);
+    lv_obj_t * cam_sym = lv_label_create(btn_qr_entry);
+    lv_label_set_text(cam_sym, LV_SYMBOL_IMAGE);
+    lv_obj_set_style_text_font(cam_sym, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(cam_sym, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_align(cam_sym, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_t * cam_label = lv_label_create(btn_qr_entry);
+    lv_label_set_text(cam_label, "Camera");
+    lv_obj_set_style_text_color(cam_label, COLOR_TEXT, 0);
+    lv_obj_align(cam_label, LV_ALIGN_BOTTOM_MID, 0, -8);
+
+#ifdef CONFIG_ELEC_NOSE_GATEWAY_ENABLE
+    /* AI Gateway app icon */
+    ai_analyze_btn = lv_btn_create(apps_panel);
+    lv_obj_set_size(ai_analyze_btn, 80, 80);
+    lv_obj_set_pos(ai_analyze_btn, 104, 112);
+    lv_obj_set_style_bg_color(ai_analyze_btn, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(ai_analyze_btn, lv_color_hex(0x39D98A), 0);
+    lv_obj_set_style_border_width(ai_analyze_btn, 2, 0);
+    lv_obj_set_style_radius(ai_analyze_btn, 18, 0);
+    lv_obj_add_event_cb(ai_analyze_btn, ai_analyze_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * ai_sym = lv_label_create(ai_analyze_btn);
+    lv_label_set_text(ai_sym, LV_SYMBOL_EDIT);
+    lv_obj_set_style_text_font(ai_sym, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(ai_sym, lv_color_hex(0x39D98A), 0);
+    lv_obj_align(ai_sym, LV_ALIGN_TOP_MID, 0, 12);
+    ai_analyze_btn_label = lv_label_create(ai_analyze_btn);
+    lv_label_set_text(ai_analyze_btn_label, "AI");
+    lv_obj_set_style_text_color(ai_analyze_btn_label, COLOR_TEXT, 0);
+    lv_obj_align(ai_analyze_btn_label, LV_ALIGN_BOTTOM_MID, 0, -8);
+#endif
+
+    /* Bottom bar: Volume only */
+    lv_obj_t * bottom_bar = lv_obj_create(scr_main);
+    apply_no_shadow(bottom_bar);
+    lv_obj_set_size(bottom_bar, 1024, 56);
+    lv_obj_align(bottom_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(bottom_bar, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(bottom_bar, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(bottom_bar, 0, 0);
+    lv_obj_set_style_radius(bottom_bar, 0, 0);
+    lv_obj_clear_flag(bottom_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+
+
+    /* Create Siri orb on scr_main (not lazy — event-handler creation caused freeze) */
+    create_siri_orb();
+
+    /* Fake data timer for UI status updates (created here, not in btn handler, to avoid freeze) */
+    fake_data_timer = lv_timer_create(fake_data_timer_cb, 500, NULL);
+
+    control_center_init(scr_main);
+
+    /* ====================================================================
+     * 3. QR SCAN SCREEN
+     * ==================================================================== */
+    scr_qr = lv_obj_create(NULL);
+    apply_no_shadow(scr_qr);
+    lv_obj_set_style_bg_color(scr_qr, lv_color_hex(0x0A0A1A), 0);
+    lv_obj_set_style_bg_opa(scr_qr, LV_OPA_COVER, 0);
+
+    cam_img_obj = lv_img_create(scr_qr);
+    lv_obj_set_pos(cam_img_obj, 0, 60);
+    lv_obj_set_size(cam_img_obj, 1024, 540);
+
+    lv_obj_t * qr_title = lv_label_create(scr_qr);
+    lv_label_set_text(qr_title, "E-Nose Node Scanner");
+    lv_obj_set_style_text_color(qr_title, lv_color_hex(0x00FF88), 0);
+    lv_obj_align(qr_title, LV_ALIGN_TOP_MID, 0, 10);
+
+    lv_obj_t * btn_qr_back = lv_btn_create(scr_qr);
+    lv_obj_set_pos(btn_qr_back, 10, 60);
+    lv_obj_set_size(btn_qr_back, 80, 40);
+    lv_obj_set_style_bg_color(btn_qr_back, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(btn_qr_back, 5, 0);
+    lv_obj_t * lbl_qr_back = lv_label_create(btn_qr_back);
+    lv_label_set_text(lbl_qr_back, "< Back");
+    lv_obj_set_style_text_color(lbl_qr_back, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(lbl_qr_back);
+
+    lv_obj_t * scan_hint = lv_label_create(scr_qr);
+    lv_label_set_text(scan_hint, "Place QR in camera view");
+    lv_obj_set_style_text_color(scan_hint, lv_color_hex(0x00FFFF), 0);
+    lv_obj_align(scan_hint, LV_ALIGN_BOTTOM_MID, 0, -100);
+
+    lv_obj_t * scan_box = lv_obj_create(scr_qr);
+    apply_no_shadow(scan_box);
+    lv_obj_set_pos(scan_box, 412, 200);
+    lv_obj_set_size(scan_box, 200, 200);
+    lv_obj_set_style_bg_opa(scan_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(scan_box, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_border_width(scan_box, 3, 0);
+    lv_obj_set_style_radius(scan_box, 10, 0);
+
+    qr_result_panel = lv_obj_create(scr_qr);
+    apply_no_shadow(qr_result_panel);
+    lv_obj_set_size(qr_result_panel, 200, 100);
+    lv_obj_align(qr_result_panel, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_style_bg_color(qr_result_panel, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(qr_result_panel, LV_OPA_70, 0);
+    lv_obj_set_style_border_color(qr_result_panel, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_border_width(qr_result_panel, 1, 0);
+    lv_obj_set_style_radius(qr_result_panel, 10, 0);
+    lv_obj_add_flag(qr_result_panel, LV_OBJ_FLAG_HIDDEN);
+    
+    qr_result_label = lv_label_create(qr_result_panel);
+    lv_label_set_text(qr_result_label, "Waiting for QR...");
+    lv_obj_set_style_text_color(qr_result_label, lv_color_hex(0x00FF88), 0);
+    lv_obj_align(qr_result_label, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_add_event_cb(btn_qr_entry, [](lv_event_t * e){
+        ESP_LOGI("CAM", "QR Scanner button clicked");
+        lv_screen_load(scr_qr);
+        lv_obj_add_flag(qr_result_panel, LV_OBJ_FLAG_HIDDEN);
+        camera_display_initialized = false;
+        camera_stream_stopping = false;
+        cam_scale_applied = false;
+        if(video_fd < 0) {
+            ESP_LOGI("CAM", "Opening camera device...");
+            if(!camera_initialized) {
+                i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
+                esp_err_t ret1 = app_video_main(i2c_bus);
+                if (ret1 != ESP_OK) {
+                    ESP_LOGE("CAM", "Camera sensor init failed: %s", esp_err_to_name(ret1));
+                } else {
+                    ESP_LOGI("CAM", "Camera sensor initialized successfully");
+                    camera_initialized = true;
+                }
+            } else {
+                ESP_LOGI("CAM", "Camera already initialized");
+            }
+            
+            app_video_register_frame_operation_cb(camera_frame_cb);
+            ESP_LOGI("CAM", "Frame callback registered");
+            
+            video_fd = app_video_open((char*)"/dev/video0", (video_fmt_t)APP_VIDEO_FMT_RGB565);
+            if(video_fd < 0) {
+                ESP_LOGE("CAM", "Failed to open camera device");
+                return;
+            }
+            ESP_LOGI("CAM", "Camera device opened, fd=%d", video_fd);
+            
+            esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &cam_alignment);
+            cam_buf_size = app_video_get_buf_size();
+            ESP_LOGI("CAM", "Buffer size: %zu bytes, alignment: %zu", cam_buf_size, cam_alignment);
+            
+            if(cam_buf_size == 0) {
+                ESP_LOGE("CAM", "Invalid buffer size");
+                close(video_fd);
+                video_fd = -1;
+                return;
+            }
+            
+            for(int i = 0; i < CAM_BUF_NUM; i++) {
+                cam_buffers[i] = (uint8_t *)heap_caps_aligned_alloc(cam_alignment, cam_buf_size, MALLOC_CAP_SPIRAM);
+                if(!cam_buffers[i]) {
+                    ESP_LOGE("CAM", "Failed to allocate buffer %d", i);
+                    for(int j = 0; j < i; j++) {
+                        heap_caps_free(cam_buffers[j]);
+                        cam_buffers[j] = NULL;
+                    }
+                    close(video_fd);
+                    video_fd = -1;
+                    return;
+                }
+                ESP_LOGI("CAM", "Buffer %d allocated at %p", i, cam_buffers[i]);
+            }
+            
+            ESP_LOGI("CAM", "Setting up %d buffers in USERPTR mode...", CAM_BUF_NUM);
+            esp_err_t ret2 = app_video_set_bufs(video_fd, CAM_BUF_NUM, (const void **)cam_buffers);
+            if(ret2 != ESP_OK) {
+                ESP_LOGE("CAM", "Failed to set video buffers: %s", esp_err_to_name(ret2));
+                for(int i = 0; i < CAM_BUF_NUM; i++) {
+                    if(cam_buffers[i]) heap_caps_free(cam_buffers[i]);
+                }
+                close(video_fd);
+                video_fd = -1;
+                return;
+            }
+            
+            ESP_LOGI("CAM", "Starting video stream task...");
+            esp_err_t ret3 = app_video_stream_task_start(video_fd, 0);
+            if(ret3 != ESP_OK) {
+                ESP_LOGE("CAM", "Failed to start video stream task: %s", esp_err_to_name(ret3));
+                for(int i = 0; i < CAM_BUF_NUM; i++) {
+                    if(cam_buffers[i]) heap_caps_free(cam_buffers[i]);
+                    cam_buffers[i] = NULL;
+                }
+                close(video_fd);
+                video_fd = -1;
+                // Keep camera_initialized = true: esp_video_init() already registered ISP device,
+                // calling it again would fail with "video name=ISP has been registered"
+                return;
+            }
+            
+            ESP_LOGI("CAM", "Camera stream started successfully");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            camera_display_initialized = true;
+        } else {
+            ESP_LOGI("CAM", "Camera already running (fd=%d)", video_fd);
+            camera_display_initialized = true;
+        }
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_add_event_cb(btn_qr_back, [](lv_event_t * e){
+        camera_display_initialized = false;
+        camera_stream_stopping = true;
+        cam_scale_applied = false;
+        cam_header_set = false;
+        disp_busy = false;
+        
+        if(video_fd >= 0) {
+            ESP_LOGI("CAM", "Stopping video stream...");
+            app_video_stream_task_stop(video_fd);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            app_video_stream_wait_stop();
+            close(video_fd);
+            video_fd = -1;
+            
+            for(int i = 0; i < CAM_BUF_NUM; i++) {
+                if(cam_buffers[i]) {
+                    heap_caps_free(cam_buffers[i]);
+                    cam_buffers[i] = NULL;
+                }
+            }
+            
+            for(int i = 0; i < DISP_BUF_COUNT; i++) {
+                if(disp_buffers[i]) {
+                    heap_caps_free(disp_buffers[i]);
+                    disp_buffers[i] = NULL;
+                }
+            }
+            
+            if (q_cv) {
+                quirc_destroy(q_cv);
+                q_cv = NULL;
+            }
+            
+            ESP_LOGI("CAM", "Camera and display resources freed");
+        }
+
+        camera_stream_stopping = false;
+        
+        lv_screen_load(scr_main);
+    }, LV_EVENT_CLICKED, NULL);
+
+    /* ====================================================================
+     * 4. S3 SENSOR DETAIL SCREENS
+     * ==================================================================== */
+
+    /* S3-A Detail Screen */
+    scr_s3a = lv_obj_create(NULL);
+    apply_no_shadow(scr_s3a);
+    lv_obj_set_style_bg_color(scr_s3a, lv_color_hex(0x0B1020), 0);
+    lv_obj_set_style_bg_opa(scr_s3a, LV_OPA_COVER, 0);
+
+    lv_obj_t * s3a_back = lv_btn_create(scr_s3a);
+    lv_obj_set_pos(s3a_back, 10, 10);
+    lv_obj_set_size(s3a_back, 80, 40);
+    lv_obj_set_style_bg_color(s3a_back, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(s3a_back, 5, 0);
+    lv_obj_t * s3a_back_lbl = lv_label_create(s3a_back);
+    lv_label_set_text(s3a_back_lbl, "< Back");
+    lv_obj_set_style_text_color(s3a_back_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(s3a_back_lbl);
+    lv_obj_add_event_cb(s3a_back, [](lv_event_t * e){ lv_screen_load(scr_main); }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * s3a_title = lv_label_create(scr_s3a);
+    lv_label_set_text(s3a_title, "S3-A Sensor Data");
+    lv_obj_set_style_text_font(s3a_title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s3a_title, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_align(s3a_title, LV_ALIGN_TOP_MID, 0, 14);
+
+    lv_obj_t * s3a_detail_card = lv_obj_create(scr_s3a);
+    apply_no_shadow(s3a_detail_card);
+    lv_obj_set_size(s3a_detail_card, 600, 320);
+    lv_obj_align(s3a_detail_card, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_style_bg_color(s3a_detail_card, lv_color_hex(0x151C30), 0);
+    lv_obj_set_style_bg_opa(s3a_detail_card, LV_OPA_80, 0);
+    lv_obj_set_style_border_color(s3a_detail_card, lv_color_hex(0x4AA3FF40), 0);
+    lv_obj_set_style_border_width(s3a_detail_card, 1, 0);
+    lv_obj_set_style_radius(s3a_detail_card, 18, 0);
+
+    node1_voc_label = lv_label_create(s3a_detail_card);
+    lv_label_set_text(node1_voc_label, "VOC:-- ppm");
+    lv_obj_set_style_text_font(node1_voc_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node1_voc_label, COLOR_TEXT, 0);
+    lv_obj_align(node1_voc_label, LV_ALIGN_TOP_LEFT, 30, 20);
+
+    node1_co2_label = lv_label_create(s3a_detail_card);
+    lv_label_set_text(node1_co2_label, "CO2:-- ppm");
+    lv_obj_set_style_text_font(node1_co2_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node1_co2_label, COLOR_TEXT, 0);
+    lv_obj_align(node1_co2_label, LV_ALIGN_TOP_LEFT, 30, 68);
+
+    node1_odor_label = lv_label_create(s3a_detail_card);
+    lv_label_set_text(node1_odor_label, "Odor:-- ppm");
+    lv_obj_set_style_text_font(node1_odor_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node1_odor_label, COLOR_TEXT, 0);
+    lv_obj_align(node1_odor_label, LV_ALIGN_TOP_LEFT, 30, 116);
+
+    node1_hcho_label = lv_label_create(s3a_detail_card);
+    lv_label_set_text(node1_hcho_label, "HCHO:-- ppm");
+    lv_obj_set_style_text_font(node1_hcho_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node1_hcho_label, COLOR_TEXT, 0);
+    lv_obj_align(node1_hcho_label, LV_ALIGN_TOP_LEFT, 310, 20);
+
+    node1_co_label = lv_label_create(s3a_detail_card);
+    lv_label_set_text(node1_co_label, "CO:-- ppm");
+    lv_obj_set_style_text_font(node1_co_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node1_co_label, COLOR_TEXT, 0);
+    lv_obj_align(node1_co_label, LV_ALIGN_TOP_LEFT, 310, 68);
+
+    node1_pred_label = lv_label_create(s3a_detail_card);
+    lv_label_set_text(node1_pred_label, "Pred:--");
+    lv_obj_set_style_text_font(node1_pred_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(node1_pred_label, lv_color_hex(0x39D98A), 0);
+    lv_obj_align(node1_pred_label, LV_ALIGN_TOP_LEFT, 310, 116);
+
+    /* UV Control Panel */
+    s_warmup_lbl = lv_label_create(s3a_detail_card);
+    lv_label_set_text(s_warmup_lbl, "");
+    lv_obj_set_style_text_color(s_warmup_lbl, lv_color_hex(0xFFB84D), 0);
+    lv_obj_set_style_text_font(s_warmup_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_align(s_warmup_lbl, LV_ALIGN_TOP_MID, 0, 180);
+    lv_obj_add_flag(s_warmup_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    s_uv_btn = lv_btn_create(s3a_detail_card);
+    lv_obj_set_size(s_uv_btn, 130, 44);
+    lv_obj_align(s_uv_btn, LV_ALIGN_BOTTOM_LEFT, 30, -12);
+    lv_obj_set_style_radius(s_uv_btn, 22, 0);
+    lv_obj_set_style_bg_color(s_uv_btn, lv_color_hex(0x6655FF), 0);
+    s_uv_lbl = lv_label_create(s_uv_btn);
+    lv_label_set_text(s_uv_lbl, "UV OFF");
+    lv_obj_set_style_text_color(s_uv_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_uv_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(s_uv_lbl);
+    lv_obj_add_event_cb(s_uv_btn, [](lv_event_t * e) {
+        bool cur_uv = false;
+        if (s_udp_data_mutex && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            cur_uv = s_udp_node1.uv;
+            xSemaphoreGive(s_udp_data_mutex);
+        }
+        bool new_uv = !cur_uv;
+        uart_receiver_send(new_uv ? "uv_on" : "uv_off");
+        ui_set_uv(new_uv);
+    }, LV_EVENT_CLICKED, NULL);
+
+    /* Dur -30s */
+    lv_obj_t * uv_dur_minus_btn = lv_btn_create(s3a_detail_card);
+    lv_obj_set_size(uv_dur_minus_btn, 100, 44);
+    lv_obj_align(uv_dur_minus_btn, LV_ALIGN_BOTTOM_LEFT, 170, -12);
+    lv_obj_set_style_radius(uv_dur_minus_btn, 22, 0);
+    lv_obj_set_style_bg_color(uv_dur_minus_btn, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_t * uv_dur_minus_lbl = lv_label_create(uv_dur_minus_btn);
+    lv_label_set_text(uv_dur_minus_lbl, "Dur -30s");
+    lv_obj_set_style_text_color(uv_dur_minus_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(uv_dur_minus_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(uv_dur_minus_lbl);
+    lv_obj_add_event_cb(uv_dur_minus_btn, [](lv_event_t * e) {
+        int new_dur = s_uv_dur_setting - 30;
+        if (new_dur < 30) new_dur = 30; /* minimum 30s */
+        s_uv_dur_setting = new_dur;
+        /* Update local data so timer callback doesn't overwrite */
+        if (s_udp_data_mutex && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            s_udp_node1.uv_dur = new_dur;
+            xSemaphoreGive(s_udp_data_mutex);
+        }
+        /* Update UI immediately */
+        if (s_uv_dur_lbl) lv_label_set_text_fmt(s_uv_dur_lbl, "UV dur: %ds", new_dur);
+        /* Send command to C6 (value in minutes) */
+        int minutes = new_dur / 60;
+        int remainder = new_dur % 60;
+        char cmd[32];
+        if (remainder == 0) {
+            snprintf(cmd, sizeof(cmd), "uv_dur %d", minutes);
+        } else {
+            snprintf(cmd, sizeof(cmd), "uv_dur %d.%d", minutes, remainder * 10 / 60);
+        }
+        ESP_LOGI("UV", "Dur -30s: -> %ds, cmd=%s", new_dur, cmd);
+        uart_receiver_send(cmd);
+    }, LV_EVENT_CLICKED, NULL);
+
+    /* Dur +30s */
+    lv_obj_t * uv_dur_plus_btn = lv_btn_create(s3a_detail_card);
+    lv_obj_set_size(uv_dur_plus_btn, 100, 44);
+    lv_obj_align(uv_dur_plus_btn, LV_ALIGN_BOTTOM_LEFT, 280, -12);
+    lv_obj_set_style_radius(uv_dur_plus_btn, 22, 0);
+    lv_obj_set_style_bg_color(uv_dur_plus_btn, lv_color_hex(0x2A3A5A), 0);
+    lv_obj_t * uv_dur_plus_lbl = lv_label_create(uv_dur_plus_btn);
+    lv_label_set_text(uv_dur_plus_lbl, "Dur +30s");
+    lv_obj_set_style_text_color(uv_dur_plus_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(uv_dur_plus_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(uv_dur_plus_lbl);
+    lv_obj_add_event_cb(uv_dur_plus_btn, [](lv_event_t * e) {
+        int new_dur = s_uv_dur_setting + 30;
+        if (new_dur > 600) new_dur = 600; /* max 10 minutes */
+        s_uv_dur_setting = new_dur;
+        /* Update local data so timer callback doesn't overwrite */
+        if (s_udp_data_mutex && xSemaphoreTake(s_udp_data_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            s_udp_node1.uv_dur = new_dur;
+            xSemaphoreGive(s_udp_data_mutex);
+        }
+        /* Update UI immediately */
+        if (s_uv_dur_lbl) lv_label_set_text_fmt(s_uv_dur_lbl, "UV dur: %ds", new_dur);
+        /* Send command to C6 (value in minutes) */
+        int minutes = new_dur / 60;
+        int remainder = new_dur % 60;
+        char cmd[32];
+        if (remainder == 0) {
+            snprintf(cmd, sizeof(cmd), "uv_dur %d", minutes);
+        } else {
+            snprintf(cmd, sizeof(cmd), "uv_dur %d.%d", minutes, remainder * 10 / 60);
+        }
+        ESP_LOGI("UV", "Dur +30s: -> %ds, cmd=%s", new_dur, cmd);
+        uart_receiver_send(cmd);
+    }, LV_EVENT_CLICKED, NULL);
+
+    s_uv_remain_lbl = lv_label_create(s3a_detail_card);
+    lv_label_set_text(s_uv_remain_lbl, "UV remain: --");
+    lv_obj_set_style_text_color(s_uv_remain_lbl, lv_color_hex(0x91A0B8), 0);
+    lv_obj_set_style_text_font(s_uv_remain_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_uv_remain_lbl, LV_ALIGN_BOTTOM_LEFT, 30, -60);
+
+    s_uv_dur_lbl = lv_label_create(s3a_detail_card);
+    lv_label_set_text(s_uv_dur_lbl, "UV dur: --s");
+    lv_obj_set_style_text_color(s_uv_dur_lbl, lv_color_hex(0x91A0B8), 0);
+    lv_obj_set_style_text_font(s_uv_dur_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_uv_dur_lbl, LV_ALIGN_BOTTOM_LEFT, 180, -60);
+
+    lv_obj_t * skip_warmup_btn = lv_btn_create(s3a_detail_card);
+    lv_obj_set_size(skip_warmup_btn, 120, 44);
+    lv_obj_align(skip_warmup_btn, LV_ALIGN_BOTTOM_LEFT, 460, -12);
+    lv_obj_set_style_radius(skip_warmup_btn, 22, 0);
+    lv_obj_set_style_bg_color(skip_warmup_btn, lv_color_hex(0xFF5533), 0);
+    lv_obj_t * skip_warmup_lbl = lv_label_create(skip_warmup_btn);
+    lv_label_set_text(skip_warmup_lbl, "Skip Warmup");
+    lv_obj_set_style_text_color(skip_warmup_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(skip_warmup_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_center(skip_warmup_lbl);
+    lv_obj_add_event_cb(skip_warmup_btn, [](lv_event_t * e) {
+        uart_receiver_send("skip warmup");
+        uart_receiver_set_warmup_remaining(0);
+    }, LV_EVENT_CLICKED, NULL);
+
+    /* S3-B Detail Screen */
+    scr_s3b = lv_obj_create(NULL);
+    apply_no_shadow(scr_s3b);
+    lv_obj_set_style_bg_color(scr_s3b, lv_color_hex(0x0B1020), 0);
+    lv_obj_set_style_bg_opa(scr_s3b, LV_OPA_COVER, 0);
+
+    lv_obj_t * s3b_back = lv_btn_create(scr_s3b);
+    lv_obj_set_pos(s3b_back, 10, 10);
+    lv_obj_set_size(s3b_back, 80, 40);
+    lv_obj_set_style_bg_color(s3b_back, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_radius(s3b_back, 5, 0);
+    lv_obj_t * s3b_back_lbl = lv_label_create(s3b_back);
+    lv_label_set_text(s3b_back_lbl, "< Back");
+    lv_obj_set_style_text_color(s3b_back_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(s3b_back_lbl);
+    lv_obj_add_event_cb(s3b_back, [](lv_event_t * e){ lv_screen_load(scr_main); }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * s3b_title = lv_label_create(scr_s3b);
+    lv_label_set_text(s3b_title, "S3-B Sensor Data");
+    lv_obj_set_style_text_font(s3b_title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s3b_title, lv_color_hex(0x4AA3FF), 0);
+    lv_obj_align(s3b_title, LV_ALIGN_TOP_MID, 0, 14);
+
+    lv_obj_t * s3b_detail_card = lv_obj_create(scr_s3b);
+    apply_no_shadow(s3b_detail_card);
+    lv_obj_set_size(s3b_detail_card, 600, 320);
+    lv_obj_align(s3b_detail_card, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_style_bg_color(s3b_detail_card, lv_color_hex(0x151C30), 0);
+    lv_obj_set_style_bg_opa(s3b_detail_card, LV_OPA_80, 0);
+    lv_obj_set_style_border_color(s3b_detail_card, lv_color_hex(0x4AA3FF40), 0);
+    lv_obj_set_style_border_width(s3b_detail_card, 1, 0);
+    lv_obj_set_style_radius(s3b_detail_card, 18, 0);
+
+    node2_voc_label = lv_label_create(s3b_detail_card);
+    lv_label_set_text(node2_voc_label, "VOC:-- ppm");
+    lv_obj_set_style_text_font(node2_voc_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node2_voc_label, COLOR_TEXT, 0);
+    lv_obj_align(node2_voc_label, LV_ALIGN_TOP_LEFT, 30, 20);
+
+    node2_co2_label = lv_label_create(s3b_detail_card);
+    lv_label_set_text(node2_co2_label, "CO2:-- ppm");
+    lv_obj_set_style_text_font(node2_co2_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node2_co2_label, COLOR_TEXT, 0);
+    lv_obj_align(node2_co2_label, LV_ALIGN_TOP_LEFT, 30, 68);
+
+    node2_odor_label = lv_label_create(s3b_detail_card);
+    lv_label_set_text(node2_odor_label, "Odor:-- ppm");
+    lv_obj_set_style_text_font(node2_odor_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node2_odor_label, COLOR_TEXT, 0);
+    lv_obj_align(node2_odor_label, LV_ALIGN_TOP_LEFT, 30, 116);
+
+    node2_hcho_label = lv_label_create(s3b_detail_card);
+    lv_label_set_text(node2_hcho_label, "HCHO:-- ppm");
+    lv_obj_set_style_text_font(node2_hcho_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node2_hcho_label, COLOR_TEXT, 0);
+    lv_obj_align(node2_hcho_label, LV_ALIGN_TOP_LEFT, 310, 20);
+
+    node2_co_label = lv_label_create(s3b_detail_card);
+    lv_label_set_text(node2_co_label, "CO:-- ppm");
+    lv_obj_set_style_text_font(node2_co_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(node2_co_label, COLOR_TEXT, 0);
+    lv_obj_align(node2_co_label, LV_ALIGN_TOP_LEFT, 310, 68);
+
+    node2_pred_label = lv_label_create(s3b_detail_card);
+    lv_label_set_text(node2_pred_label, "Pred:--");
+    lv_obj_set_style_text_font(node2_pred_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(node2_pred_label, lv_color_hex(0x39D98A), 0);
+    lv_obj_align(node2_pred_label, LV_ALIGN_TOP_LEFT, 310, 116);
+
+    /* Reload startup wallpaper right before showing screen (slot 0 — no longer shared) */
+    if (sd_card_bg_is_ready() && s_current_startup_wallpaper_path[0]) {
+        const lv_image_dsc_t *img = sd_card_bg_load_jpeg_slot(s_current_startup_wallpaper_path, 0);
+        if (img && s_startup_wallpaper_img) {
+            lv_image_set_src(s_startup_wallpaper_img, img);
+            ESP_LOGI("UI", "Startup wallpaper refreshed for display");
+        }
+    }
+
+    lv_screen_load(scr_startup);
+}
+
+/* Web camera: JPEG pre-encoded in camera callback, HTTP handler just reads it */
+
+bool ui_is_camera_available(void) {
+    return web_jpeg_available();
+}
+
+bool ui_get_camera_frame(uint8_t **buf, uint32_t *w, uint32_t *h, size_t *len) {
+    return web_jpeg_get_frame(buf, w, h, len);
+}

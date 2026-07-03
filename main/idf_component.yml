@@ -1,0 +1,23 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf:
+    version: ">=5.5.3"
+  espressif/esp_wifi_remote:
+    version: "0.14.*"
+    
+  espressif/esp_hosted:
+    version: "1.4.*"
+
+  esp_video:
+    version: "2.0.*"
+    public: true
+
+  espressif/quirc:
+    version: "1.2.*"
+
+  espressif/esp_lvgl_adapter:
+    version: "0.3.*"
+    public: true
+
+  espressif/esp_websocket_client:
+    version: "*"

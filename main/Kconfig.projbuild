@@ -1,0 +1,53 @@
+menu "Example Configurations"
+    config EXAMPLE_ENABLE_SD_CARD
+        bool "Enable SD Card"
+        default n
+        help 
+            Enabling this option will initialize the SD card, so the SD card needs to be inserted into the slot. Additionally, if using the Video Player example, an MJPEG format video must be saved on the SD card.
+endmenu
+
+menu "Volcano AI Configuration"
+    choice AI_AGENT_MODE
+        prompt "Volcano RTC/WS mode"
+        default VOLC_RTC_MODE
+
+        config VOLC_RTC_MODE
+            bool "enable volcano rtc mode (Recommended)"
+
+        config VOLC_WS_MODE
+            bool "enable volcano ws mode"
+
+    endchoice
+
+    config VOLC_INSTANCE_ID
+        string "volcano instance id"
+        default "69ca44b0428d2bdd56d9f9a1"
+
+    config VOLC_PRODUCT_KEY
+        string "volcano product key"
+        default "69ca44d58258dcdae4af8464"
+
+    config VOLC_PRODUCT_SECRET
+        string "product secret"
+        default "72f0cba51f4d0c94c7d3b955"
+
+    config VOLC_DEVICE_NAME
+        string "device name"
+        default "ESP32P4-WISDOM"
+
+    config VOLC_BOT_ID
+        string "bot id"
+        default "boteni9v_mrQ"
+
+    choice VOLC_AUDIO_CODEC
+        prompt "supported audio codec"
+        default VOLC_AUDIO_PCM16
+
+        config VOLC_AUDIO_G711A
+            bool "External G711A codec: 8k G711A data to SDK for upstream; 8k G711A data callback from SDK for downstream"
+        
+        config VOLC_AUDIO_PCM16
+            bool "No audio codec: 16k pcm data to SDK for upstream; 16k pcm data callback from SDK for downstream (Recommended)"
+
+    endchoice
+endmenu

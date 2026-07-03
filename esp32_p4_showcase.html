@@ -1,0 +1,1541 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-P4 智能边缘网关 | 下一代 AIoT 控制中心</title>
+    
+    <!-- Google Fonts & FontAwesome Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Noto+Sans+SC:wght@300;400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --primary: #FF6A00;
+            --primary-glow: rgba(255, 106, 0, 0.4);
+            --bg-dark: #0A0B10;
+            --card-bg: rgba(20, 22, 33, 0.7);
+            --text-main: #F3F4F6;
+            --text-muted: #9CA3AF;
+            --border-glow: rgba(255, 106, 0, 0.15);
+            --accent-blue: #00F0FF;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Outfit', 'Noto Sans SC', sans-serif;
+            scroll-behavior: smooth;
+        }
+
+        body {
+            background: radial-gradient(circle at 50% 50%, #0c0d16 0%, #050608 100%);
+            color: var(--text-main);
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0A0B10;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1F2937;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary);
+        }
+
+        /* Hero Canvas Background */
+        #bg-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            pointer-events: none;
+            opacity: 0.6;
+        }
+
+        /* Glassmorphism Header */
+        header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 100;
+            background: rgba(10, 11, 16, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 20px 5%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #FFF 50%, var(--primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo i {
+            color: var(--primary);
+            filter: drop-shadow(0 0 8px var(--primary));
+        }
+
+        nav {
+            display: flex;
+            gap: 30px;
+        }
+
+        nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 15px;
+            font-weight: 600;
+            transition: all 0.3s;
+            position: relative;
+        }
+
+        nav a:hover {
+            color: var(--text-main);
+        }
+
+        nav a::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 0;
+            width: 0;
+            height: 2px;
+            background: var(--primary);
+            transition: width 0.3s;
+        }
+
+        nav a:hover::after {
+            width: 100%;
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 0 10%;
+            position: relative;
+            z-index: 1;
+            padding-top: 100px;
+        }
+
+        .badge {
+            background: rgba(255, 106, 0, 0.1);
+            border: 1px solid var(--primary);
+            color: var(--primary);
+            padding: 6px 16px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 24px;
+            box-shadow: 0 0 15px rgba(255, 106, 0, 0.1);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 106, 0, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 106, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 106, 0, 0); }
+        }
+
+        .hero h1 {
+            font-size: 64px;
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 20px;
+            letter-spacing: -1px;
+            background: linear-gradient(to right, #FFFFFF 40%, #E5E7EB 70%, var(--primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero p {
+            font-size: 20px;
+            color: var(--text-muted);
+            max-width: 700px;
+            margin-bottom: 40px;
+        }
+
+        .hero-btns {
+            display: flex;
+            gap: 20px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), #FF3C00);
+            color: white;
+            text-decoration: none;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s;
+            box-shadow: 0 4px 20px var(--primary-glow);
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(255, 106, 0, 0.6);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-main);
+            text-decoration: none;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        /* Scroll Down Indicator */
+        .scroll-down {
+            position: absolute;
+            bottom: 40px;
+            animation: bounce 2s infinite;
+            color: var(--text-muted);
+            font-size: 20px;
+            cursor: pointer;
+        }
+
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-10px); }
+            60% { transform: translateY(-5px); }
+        }
+
+        /* Interactive Showcase Section (Before/After Slider) */
+        .showcase-container {
+            padding: 100px 5%;
+            max-width: 1200px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .section-title {
+            font-size: 38px;
+            font-weight: 800;
+            margin-bottom: 15px;
+            text-align: center;
+            background: linear-gradient(to right, #FFF, var(--text-muted));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .section-subtitle {
+            color: var(--text-muted);
+            font-size: 16px;
+            margin-bottom: 60px;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        /* Before/After Split Slider */
+        .spotlight-wrapper {
+            position: relative;
+            width: 100%;
+            height: 600px;
+            max-width: 900px;
+            margin: 0 auto;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+            cursor: none; /* Hide default cursor inside frame */
+        }
+
+        /* Styles for the Native SVG masking image layers inside the container */
+        #spotlight-svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .spotlight-ring {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 520px; /* Width of the rounded rectangle reveal box */
+            height: 360px; /* Height of the rounded rectangle reveal box */
+            border-radius: 36px; /* Corner radius (matching rx/ry of mask) */
+            border: 1.5px dashed rgba(255, 106, 0, 0.35);
+            box-shadow: 0 0 35px var(--primary-glow), inset 0 0 20px var(--primary-glow);
+            transform: translate3d(var(--ring-x, -1000px), var(--ring-y, -1000px), 0);
+            pointer-events: none;
+            z-index: 3;
+        }
+
+        .spotlight-label {
+            position: absolute;
+            bottom: 20px;
+            background: rgba(10, 11, 16, 0.85);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 700;
+            z-index: 5;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            pointer-events: none;
+        }
+
+
+
+        .label-left {
+            left: 20px;
+            color: var(--primary);
+        }
+
+        .label-right {
+            right: 20px;
+            color: var(--accent-blue);
+        }
+
+        /* 3D Tilt Card Section */
+        .cards-section {
+            padding: 100px 5%;
+            background: rgba(10, 11, 16, 0.5);
+        }
+
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 40px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .tilt-card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            border: 1px solid var(--border-glow);
+            padding: 30px;
+            position: relative;
+            overflow: hidden;
+            transition: border-color 0.5s, box-shadow 0.5s;
+            transform-style: preserve-3d;
+            transform: perspective(1000px);
+        }
+
+        .tilt-card:hover {
+            border-color: var(--primary);
+            box-shadow: 0 15px 35px rgba(255, 106, 0, 0.15);
+        }
+
+        .card-icon {
+            font-size: 32px;
+            color: var(--primary);
+            margin-bottom: 20px;
+            text-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .tilt-card h3 {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: white;
+        }
+
+        .tilt-card p {
+            color: var(--text-muted);
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .card-glow {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle 100px at var(--mouse-x, 0) var(--mouse-y, 0), rgba(255, 106, 0, 0.08), transparent 80%);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* Nebula Section styles */
+        .nebula-section {
+            padding: 100px 5%;
+            position: relative;
+            background: #06070a;
+            overflow: hidden;
+            border-top: 1px solid rgba(255, 106, 0, 0.05);
+            border-bottom: 1px solid rgba(255, 106, 0, 0.05);
+        }
+
+        #nebula-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            opacity: 0.8;
+            pointer-events: none;
+        }
+
+        .nebula-content {
+            position: relative;
+            z-index: 2;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .chain-flow {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 60px 0;
+            position: relative;
+            gap: 20px;
+        }
+
+        /* SVG Line connecting the nodes */
+        .chain-svg {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 60px;
+            transform: translateY(-50%);
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .chain-svg path {
+            fill: none;
+            stroke: rgba(255, 255, 255, 0.05);
+            stroke-width: 4;
+        }
+
+        .chain-svg .path-pulse {
+            stroke: url(#pulse-gradient);
+            stroke-width: 4;
+            stroke-dasharray: 40, 160;
+            animation: strokePulse 4s linear infinite;
+        }
+
+        @keyframes strokePulse {
+            to {
+                stroke-dashoffset: -200;
+            }
+        }
+
+        .chain-node {
+            width: 160px;
+            height: 160px;
+            border-radius: 50%;
+            background: rgba(15, 17, 26, 0.85);
+            border: 2px solid rgba(255, 106, 0, 0.2);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            z-index: 2;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+            text-align: center;
+            padding: 10px;
+        }
+
+        .chain-node:hover, .chain-node.active {
+            border-color: var(--primary);
+            box-shadow: 0 0 25px var(--primary-glow);
+            transform: scale(1.1);
+            background: rgba(255, 106, 0, 0.08);
+        }
+
+        .chain-node.active-blue:hover, .chain-node.active-blue.active {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 25px rgba(0, 240, 255, 0.4);
+            background: rgba(0, 240, 255, 0.08);
+        }
+
+        .chain-node i {
+            font-size: 28px;
+            color: var(--primary);
+            margin-bottom: 10px;
+            transition: color 0.3s;
+        }
+
+        .chain-node.active-blue i {
+            color: var(--accent-blue);
+        }
+
+        .chain-node span {
+            font-size: 14px;
+            font-weight: 700;
+            color: white;
+        }
+
+        .chain-node small {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Detail Panel */
+        .chain-detail-panel {
+            background: var(--card-bg);
+            border: 1px solid var(--border-glow);
+            border-radius: 16px;
+            padding: 30px;
+            min-height: 200px;
+            margin-top: 40px;
+            display: flex;
+            gap: 30px;
+            align-items: center;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s;
+        }
+
+        .detail-icon {
+            font-size: 48px;
+            color: var(--primary);
+            opacity: 0.8;
+            min-width: 80px;
+            text-align: center;
+        }
+
+        .detail-text h4 {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: white;
+        }
+
+        .detail-text p {
+            color: var(--text-muted);
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .detail-meta {
+            display: inline-block;
+            background: rgba(255, 106, 0, 0.1);
+            color: var(--primary);
+            border: 1px solid rgba(255, 106, 0, 0.2);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 700;
+            margin-top: 12px;
+        }
+
+        /* Nested AI Scheme Container */
+        .nested-ai-box {
+            display: grid;
+            grid-template-columns: 1fr 120px 1fr;
+            gap: 30px;
+            margin-top: 80px;
+            align-items: center;
+        }
+
+        .ai-card {
+            background: rgba(15, 17, 26, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 30px;
+            position: relative;
+        }
+
+        .ai-card.s3-edge {
+            border-left: 4px solid var(--primary);
+        }
+
+        .ai-card.cloud-server {
+            border-right: 4px solid var(--accent-blue);
+        }
+
+        .ai-card h3 {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 15px;
+            color: white;
+        }
+
+        .ai-card ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .ai-card li {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            padding-left: 20px;
+            position: relative;
+        }
+
+        .ai-card li::before {
+            content: '\f058';
+            font-family: 'Font Awesome 6 Free';
+            font-weight: 900;
+            position: absolute;
+            left: 0;
+            color: var(--primary);
+        }
+
+        .ai-card.cloud-server li::before {
+            color: var(--accent-blue);
+        }
+
+        .ai-bridge-flow {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            gap: 15px;
+        }
+
+        .ai-bridge-flow i {
+            font-size: 28px;
+            color: var(--text-muted);
+            animation: arrowPulse 2s infinite ease-in-out;
+        }
+
+        @keyframes arrowPulse {
+            0%, 100% { transform: scale(1); opacity: 0.5; }
+            50% { transform: scale(1.15); opacity: 1; color: var(--primary); }
+        }
+
+        .ai-bridge-flow span {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-muted);
+        }
+
+        @media (max-width: 768px) {
+            .chain-flow {
+                flex-direction: column;
+                gap: 40px;
+            }
+            .chain-svg {
+                display: none;
+            }
+            .nested-ai-box {
+                grid-template-columns: 1fr;
+            }
+            .ai-bridge-flow {
+                transform: rotate(90deg);
+                margin: 20px 0;
+            }
+        }
+
+        /* Specs Table Section */
+        .specs-section {
+            padding: 100px 5%;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .specs-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--card-bg);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            margin-top: 40px;
+        }
+
+        .specs-table th, .specs-table td {
+            padding: 18px 24px;
+            text-align: left;
+        }
+
+        .specs-table th {
+            background: rgba(255, 106, 0, 0.1);
+            color: var(--primary);
+            font-weight: 700;
+            font-size: 16px;
+            border-bottom: 1px solid rgba(255, 106, 0, 0.2);
+        }
+
+        .specs-table tr {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            transition: background 0.3s;
+        }
+
+        .specs-table tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .specs-table td:first-child {
+            font-weight: 600;
+            color: white;
+            width: 30%;
+        }
+
+        .specs-table td:last-child {
+            color: var(--text-muted);
+        }
+
+        /* Scroll Animation Triggers */
+        .reveal {
+            opacity: 0;
+            transform: translateY(40px);
+            transition: all 1s ease;
+        }
+
+        .reveal.active {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Footer */
+        footer {
+            background: #05060A;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 60px 5% 40px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .footer-logo {
+            font-size: 20px;
+            font-weight: 800;
+            color: white;
+            margin-bottom: 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .footer-logo i {
+            color: var(--primary);
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin-bottom: 30px;
+        }
+
+        .footer-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .footer-links a:hover {
+            color: var(--primary);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 40px;
+            }
+            .hero p {
+                font-size: 16px;
+            }
+            .slider-wrapper {
+                height: 400px;
+            }
+            .specs-table td {
+                padding: 12px;
+                font-size: 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Canvas Background -->
+    <canvas id="bg-canvas"></canvas>
+
+    <!-- Glass Header -->
+    <header>
+        <div class="logo">
+            <i class="fa-solid fa-microchip"></i> ESP32-P4 Gateway
+        </div>
+        <nav>
+            <a href="#hero">主页</a>
+            <a href="#showcase">外观对比</a>
+            <a href="#features">核心特性</a>
+            <a href="#specs">硬件参数</a>
+        </nav>
+    </header>
+
+    <!-- Hero Area -->
+    <section class="hero" id="hero">
+        <div class="badge">ESP32-P4 Gateway Solution</div>
+        <h1>边缘 AI 与多媒体控制网关</h1>
+        <p>搭载双核 RISC-V 240MHz 处理器，融合板载 C6 协处理器作为网络媒介，集 MIPI 摄像头与屏幕显示、本地 TFLite 神经网络推理于一身的智能交互中枢。</p>
+        <div class="hero-btns">
+            <button class="btn-primary" onclick="document.getElementById('showcase').scrollIntoView();">探索产品设计</button>
+            <button class="btn-secondary" onclick="document.getElementById('features').scrollIntoView();">查看特性</button>
+        </div>
+        <div class="scroll-down" onclick="document.getElementById('showcase').scrollIntoView();">
+            <i class="fa-solid fa-chevron-down"></i>
+        </div>
+    </section>
+
+        <h2 class="section-title">高精美一体化外壳工业设计</h2>
+        <p class="section-subtitle">移动鼠标触发液态变形镜效果。得益于原生 SVG 遮罩，产品图像本身保持完美锐利清晰不扭曲，仅显示区域的边缘呈现出波光粼粼的液态羽化融合质感。</p>
+        
+        <div class="spotlight-wrapper" id="spotlight-container">
+            <!-- Swap Layer Button -->
+            <button class="console-btn interactive-element" id="btn-toggle-layers" style="position: absolute; top: 20px; right: 20px; z-index: 10;">
+                <i class="fa-solid fa-right-left"></i> 交换背景/透镜主题
+            </button>
+
+            <!-- Native SVG Canvas for masking (fills container) -->
+            <svg id="spotlight-svg" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <!-- Fluid displacement filter -->
+                    <filter id="fluid-displace">
+                        <!-- Dynamic fractal noise for liquid ripple effect -->
+                        <feTurbulence type="fractalNoise" baseFrequency="0.008" numOctaves="3" result="noise" seed="1" />
+                        <!-- Map noise to displace coordinates making the lens organic and irregular -->
+                        <feDisplacementMap in="SourceGraphic" in2="noise" scale="80" xChannelSelector="R" yChannelSelector="G" result="displaced" />
+                        <!-- Apply Gaussian blur to the displaced boundary for smooth feathered edges -->
+                        <feGaussianBlur in="displaced" stdDeviation="25" />
+                    </filter>
+                    
+                    <!-- SVG Mask: Rounded rectangle, rx/ry defines corner radius -->
+                    <mask id="liquid-mask" maskUnits="userSpaceOnUse">
+                        <rect x="-1000" y="-1000" width="520" height="360" rx="36" ry="36" fill="white" filter="url(#fluid-displace)" />
+                    </mask>
+                </defs>
+
+                <!-- Base Image Layer -->
+                <image id="base-svg-img" href="./image2.jpg" x="0" y="0" width="100%" height="100%" preserveAspectRatio="xMidYMid slice" />
+
+                <!-- Overlay Image Layer (Masked) -->
+                <image id="reveal-svg-img" href="./image1.jpg" x="0" y="0" width="100%" height="100%" preserveAspectRatio="xMidYMid slice" mask="url(#liquid-mask)" />
+            </svg>
+
+            <!-- Floating Spotlight Ring -->
+            <div class="spotlight-ring" id="spotlight-ring"></div>
+            
+            <!-- Side Labels -->
+            <div class="spotlight-label label-left" id="label-left">背景：设计手稿蓝图</div>
+            <div class="spotlight-label label-right" id="label-right">透镜：实机渲染图</div>
+        </div>
+    </section>
+
+    <!-- 3D Card Hover Feature Cards -->
+    <section class="cards-section reveal" id="features">
+        <h2 class="section-title">核心系统架构特性</h2>
+        <p class="section-subtitle" style="margin-bottom: 60px;">软硬件深度定制协同，实现从边缘感知到大模型宏观调度的嵌套控制闭环。</p>
+        
+        <div class="cards-grid">
+            <!-- Card 1 -->
+            <div class="tilt-card" data-tilt>
+                <div class="card-glow"></div>
+                <div class="card-icon"><i class="fa-solid fa-cpu"></i></div>
+                <h3>双核 RISC-V 240MHz 算力</h3>
+                <p>ESP32-P4 作为主控芯片，搭载高性能双核 RISC-V 核心，提供充足的本地数据吞吐与多媒体编解码处理能力，完美运行复杂的嵌入式控制程序。</p>
+            </div>
+            <!-- Card 2 -->
+            <div class="tilt-card" data-tilt>
+                <div class="card-glow"></div>
+                <div class="card-icon"><i class="fa-solid fa-wifi"></i></div>
+                <h3>ESP-NOW 专属无线协处理</h3>
+                <p>板载 ESP32-C6 网卡，通过高速 SDIO 驱动桥接 Wi-Fi 6，同时作为 ESP-NOW co-processor 运行（不使用任何 BLE），实现下位机传感数据的零时延、零配对高频无线吞吐。</p>
+            </div>
+            <!-- Card 3 -->
+            <div class="tilt-card" data-tilt>
+                <div class="card-glow"></div>
+                <div class="card-icon"><i class="fa-solid fa-brain"></i></div>
+                <h3>云-边嵌套 AI 双层控制</h3>
+                <p>下位机 S3 芯片部署 TensorFlow Lite Micro 本地小模型进行微秒级快速避险，网关 P4 调度云端 Volcano 豆包大模型 API 实现长周期宏观诊断报告输出，构筑立体嵌套控制圈。</p>
+            </div>
+            <!-- Card 4 -->
+            <div class="tilt-card" data-tilt>
+                <div class="card-glow"></div>
+                <div class="card-icon"><i class="fa-solid fa-image"></i></div>
+                <h3>硬件加速多媒体管线</h3>
+                <p>硬件支持 MIPI-DSI 接口，直接驱动 7 英寸 1024x600 高清电容屏幕，依托 LVGL v9 实现极致流畅的磨砂半透明交互；MIPI-CSI 接口直连 SC2336 摄像头，配合 PPA 硬件加速支持高效扫码交互。</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Nebula Data Chain & AI Architecture Section -->
+    <section class="nebula-section reveal" id="nebula-chain">
+        <canvas id="nebula-canvas"></canvas>
+        <div class="nebula-content">
+            <h2 class="section-title">🌌 星云智能数据链与嵌套 AI 架构</h2>
+            <p class="section-subtitle">探索从传感器边缘采样、局域无线网桥转发，到网关渲染以及云端大模型联动决策的完整数据流与嵌套控制闭环。（点击各节点查看详情）</p>
+
+            <!-- Flow Chain Nodes -->
+            <div class="chain-flow">
+                <!-- SVG path for animation -->
+                <svg class="chain-svg">
+                    <defs>
+                        <linearGradient id="pulse-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="var(--primary)" stop-opacity="0"/>
+                            <stop offset="50%" stop-color="var(--primary)" stop-opacity="1"/>
+                            <stop offset="100%" stop-color="var(--accent-blue)" stop-opacity="1"/>
+                        </linearGradient>
+                    </defs>
+                    <!-- S3 -> C6 -> P4 -> Cloud Server -->
+                    <path d="M 80,30 Q 250,55 425,30 T 770,30 C 850,30 900,30 980,30" />
+                    <path class="path-pulse" d="M 80,30 Q 250,55 425,30 T 770,30 C 850,30 900,30 980,30" />
+                </svg>
+
+                <!-- Node 1: S3 -->
+                <div class="chain-node active" data-node="s3">
+                    <i class="fa-solid fa-microchip"></i>
+                    <span>ESP32-S3</span>
+                    <small>边缘感知与小模型</small>
+                </div>
+
+                <!-- Node 2: C6 -->
+                <div class="chain-node" data-node="c6">
+                    <i class="fa-solid fa-network-wired"></i>
+                    <span>ESP32-C6</span>
+                    <small>ESP-NOW 网桥</small>
+                </div>
+
+                <!-- Node 3: P4 -->
+                <div class="chain-node" data-node="p4">
+                    <i class="fa-solid fa-cubes"></i>
+                    <span>ESP32-P4</span>
+                    <small>中央智能网关</small>
+                </div>
+
+                <!-- Node 4: Cloud Server -->
+                <div class="chain-node active-blue" data-node="cloud">
+                    <i class="fa-solid fa-cloud-bolt"></i>
+                    <span>云端大模型</span>
+                    <small>火山豆包大模型</small>
+                </div>
+            </div>
+
+            <!-- Detail Display Panel -->
+            <div class="chain-detail-panel" id="chain-detail">
+                <div class="detail-icon" id="detail-icon">
+                    <i class="fa-solid fa-microchip"></i>
+                </div>
+                <div class="detail-text">
+                    <h4 id="detail-title">ESP32-S3 Edge Sensing Node (边缘端传感器与执行节点)</h4>
+                    <p id="detail-desc">ESP32-S3 下位机节点部署多维气味传感器阵列，进行高频采样。节点在芯片内部执行 <strong>TensorFlow Lite Micro 轻量级小模型</strong>，在毫秒级时间内进行气体分类并输出食品新鲜度评分 (0-100)。当新鲜度触底时，S3 节点将自动触发本地硬件控制环路（开启消杀灯、风扇通风、关闭舱门），实施第一道主动避险防护。</p>
+                    <span class="detail-meta" id="detail-meta">Protocol: ESP-NOW (2.4GHz) | Sampling: 100Hz</span>
+                </div>
+            </div>
+
+            <!-- Double-Layer Nested AI Concept -->
+            <div class="nested-ai-box">
+                <!-- Local S3 Small Model -->
+                <div class="ai-card s3-edge">
+                    <h3>ESP32-S3 本地轻量小模型 (TFLite Micro)</h3>
+                    <ul>
+                        <li><strong>微秒级超低时延</strong>：传感器采样与模型推理在毫秒内完成，杜绝网速波动的安全风险。</li>
+                        <li><strong>本地自闭环急救</strong>：新鲜度低于安全门限时自动调拨消杀硬件，无需依赖云端回复。</li>
+                        <li><strong>模型OTA远程更新</strong>：P4 支持通过 ESP-NOW 大文件协议远程向 S3 推送刷写新模型。</li>
+                    </ul>
+                </div>
+
+                <!-- Nested Indicator -->
+                <div class="ai-bridge-flow">
+                    <i class="fa-solid fa-arrows-spin"></i>
+                    <span>协同嵌套控制<br/>云-边闭环</span>
+                </div>
+
+                <!-- Cloud LLM -->
+                <div class="ai-card cloud-server">
+                    <h3>云端 Volcano 豆包大模型 (Doubao LLM)</h3>
+                    <ul>
+                        <li><strong>宏观智力诊断</strong>：依托多维度气味趋势数据，综合生成复杂变质预测和保鲜方案。</li>
+                        <li><strong>决策指令覆盖 (Override)</strong>：大模型提取的控制意图（如开启紫外灯 15 分钟）会以高优先级指令形式被 P4 接收并注入覆盖本地下位机。</li>
+                        <li><strong>海量数据汇编</strong>：沉淀气味变化曲线，提供数据分析报表与趋势反馈。</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Specs Section -->
+    <section class="specs-section reveal" id="specs">
+        <h2 class="section-title">智能控制网关规格表</h2>
+        <p class="section-subtitle">Project Orion 硬件与通信规格一览。</p>
+        
+        <table class="specs-table">
+            <thead>
+                <tr>
+                    <th>硬件配置项目</th>
+                    <th>技术规格参数与技术路线</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>核心处理器 (CPU)</td>
+                    <td>ESP32-P4 双核 32 位 RISC-V 处理器，运行频率达 240MHz</td>
+                </tr>
+                <tr>
+                    <td>网络协处理器 (RF Link)</td>
+                    <td>ESP32-C6 (支持 Wi-Fi 6 + Zigbee/Thread + ESP-NOW 专属链路)</td>
+                </tr>
+                <tr>
+                    <td>网卡通信协议接口</td>
+                    <td>SDIO (ESP-Hosted 驱动层，支持高达 4KB 大包多帧合并传输)</td>
+                </tr>
+                <tr>
+                    <td>局域网无线交互 (Edge)</td>
+                    <td>ESP-NOW 协议（2.4GHz 单播，无配对时延，完全弃用传统蓝牙 BLE）</td>
+                </tr>
+                <tr>
+                    <td>本地人机界面 (HMI)</td>
+                    <td>7 英寸 MIPI-DSI 电容触摸屏 (1024x600 分辨率)，支持 LVGL v9</td>
+                </tr>
+                <tr>
+                    <td>光学影像组件 (Camera)</td>
+                    <td>MIPI-CSI SC2336 200万像素摄像头，结合 PPA 硬件执行零拷贝扫码解析</td>
+                </tr>
+                <tr>
+                    <td>语音交互组件 (Audio)</td>
+                    <td>内置 ES8311 I2S Audio Codec + GPIO 53 功放引脚拉高使能，运行小智 AI 语音助手</td>
+                </tr>
+                <tr>
+                    <td>内存空间分配</td>
+                    <td>8MB 外部高速 PSRAM + 内部 SRAM 内存重定向分配 (cJSON 高频内存防碎片化)</td>
+                </tr>
+                <tr>
+                    <td>下位机边缘算法</td>
+                    <td>ESP32-S3 实机运行 TensorFlow Lite Micro 深度量化小模型，输出传感器分类得分</td>
+                </tr>
+                <tr>
+                    <td>云端人工智能调度</td>
+                    <td>火山引擎“豆包”大语言模型 (Doubao LLM) 宏观推理，提供系统智能指令覆盖</td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-logo">
+            <i class="fa-solid fa-microchip"></i> ESP32-P4 Smart Gateway
+        </div>
+        <div class="footer-links">
+            <a href="#hero">主页</a>
+            <a href="#showcase">外观对比</a>
+            <a href="#features">特性</a>
+            <a href="#specs">硬件参数</a>
+        </div>
+        <p>&copy; 2026 Project Orion Team. Powered by ESP32-P4 & ESP32-C6 AIoT Technology.</p>
+    </footer>
+
+    <script>
+        // --- 1. Canvas Network Background Particles ---
+        const canvas = document.getElementById('bg-canvas');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        
+        function initCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        
+        // Mouse coordinate tracking for background interaction
+        let mouse = { x: null, y: null, active: false };
+        let ripples = [];
+        let lastRippleTime = 0;
+
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+            mouse.active = true;
+
+            // Throttle ripple spawn to prevent performance lag (max 1 ripple per 70ms)
+            const now = Date.now();
+            if (now - lastRippleTime > 70) {
+                ripples.push(new Ripple(e.clientX, e.clientY));
+                lastRippleTime = now;
+            }
+        });
+
+        window.addEventListener('mouseleave', () => {
+            mouse.active = false;
+        });
+
+        // Touch support for ripples on mobile
+        window.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 0) {
+                mouse.x = e.touches[0].clientX;
+                mouse.y = e.touches[0].clientY;
+                mouse.active = true;
+
+                const now = Date.now();
+                if (now - lastRippleTime > 70) {
+                    ripples.push(new Ripple(e.touches[0].clientX, e.touches[0].clientY));
+                    lastRippleTime = now;
+                }
+            }
+        });
+
+        window.addEventListener('touchend', () => {
+            mouse.active = false;
+        });
+
+        class Ripple {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = 2;
+                this.maxRadius = Math.random() * 60 + 50; // Random expanding sizes
+                this.alpha = 0.45;
+                this.speed = Math.random() * 1.5 + 1.2;
+            }
+            update() {
+                this.radius += this.speed;
+                this.alpha -= 0.009; // Slowly fade out
+            }
+            draw() {
+                ctx.strokeStyle = `rgba(255, 106, 0, ${this.alpha})`;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        class Particle {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.size = Math.random() * 2 + 1;
+                this.speedX = Math.random() * 0.4 - 0.2;
+                this.speedY = Math.random() * 0.4 - 0.2;
+            }
+            update() {
+                // Regular motion
+                this.x += this.speedX;
+                this.y += this.speedY;
+
+                // Bounce at boundaries
+                if (this.x > canvas.width || this.x < 0) this.speedX *= -1;
+                if (this.y > canvas.height || this.y < 0) this.speedY *= -1;
+
+                // Repulsion wave force when cursor glides close
+                if (mouse.active && mouse.x !== null && mouse.y !== null) {
+                    const dx = this.x - mouse.x;
+                    const dy = this.y - mouse.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 150) {
+                        const force = (150 - dist) / 150 * 0.4;
+                        this.x += (dx / dist) * force;
+                        this.y += (dy / dist) * force;
+                    }
+                }
+            }
+            draw() {
+                ctx.fillStyle = 'rgba(255, 106, 0, 0.4)';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        function populateParticles() {
+            particles = [];
+            const count = Math.min(80, Math.floor((canvas.width * canvas.height) / 15000));
+            for (let i = 0; i < count; i++) {
+                particles.push(new Particle());
+            }
+        }
+        
+        function animateParticles() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 1. Draw ripples first (background layer)
+            ripples.forEach((r, idx) => {
+                r.update();
+                r.draw();
+                if (r.alpha <= 0 || r.radius >= r.maxRadius) {
+                    ripples.splice(idx, 1);
+                }
+            });
+
+            // 2. Draw active connecting node particle network
+            particles.forEach((p, idx) => {
+                p.update();
+                p.draw();
+                // Draw connecting lines
+                for (let j = idx + 1; j < particles.length; j++) {
+                    const p2 = particles[j];
+                    const dx = p.x - p2.x;
+                    const dy = p.y - p2.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 120) {
+                        ctx.strokeStyle = `rgba(255, 106, 0, ${0.15 - dist/120 * 0.15})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.beginPath();
+                        ctx.moveTo(p.x, p.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.stroke();
+                    }
+                }
+            });
+            requestAnimationFrame(animateParticles);
+        }
+        
+        window.addEventListener('resize', () => {
+            initCanvas();
+            populateParticles();
+        });
+        
+        initCanvas();
+        populateParticles();
+        animateParticles();
+
+        // --- Nebula Canvas Effect ---
+        const nebCanvas = document.getElementById('nebula-canvas');
+        const nebCtx = nebCanvas.getContext('2d');
+        let nebParticles = [];
+        
+        function initNebula() {
+            const container = nebCanvas.parentElement;
+            nebCanvas.width = container.offsetWidth;
+            nebCanvas.height = container.offsetHeight;
+        }
+
+        class NebulaStar {
+            constructor() {
+                this.reset();
+                this.y = Math.random() * nebCanvas.height;
+                this.x = Math.random() * nebCanvas.width;
+            }
+            reset() {
+                this.centerX = nebCanvas.width / 2;
+                this.centerY = nebCanvas.height / 2;
+                this.angle = Math.random() * Math.PI * 2;
+                this.radius = Math.random() * Math.min(nebCanvas.width, nebCanvas.height) * 0.4 + 10;
+                this.speed = (Math.random() * 0.0015 + 0.0003) * (Math.random() > 0.3 ? 1 : -0.5);
+                this.size = Math.random() * 2.2 + 0.5;
+                const hue = Math.random();
+                if (hue > 0.65) {
+                    this.color = `rgba(255, 106, 0, ${Math.random() * 0.25 + 0.15})`; // Solar Orange
+                } else if (hue > 0.25) {
+                    this.color = `rgba(0, 240, 255, ${Math.random() * 0.25 + 0.15})`; // Cyan Blue
+                } else {
+                    this.color = `rgba(138, 43, 226, ${Math.random() * 0.15 + 0.1})`;  // Purple
+                }
+            }
+            update() {
+                this.angle += this.speed;
+                this.x = this.centerX + this.radius * Math.cos(this.angle);
+                this.y = this.centerY + this.radius * Math.sin(this.angle);
+                
+                if (this.x < 0 || this.x > nebCanvas.width || this.y < 0 || this.y > nebCanvas.height) {
+                    this.reset();
+                }
+            }
+            draw() {
+                nebCtx.fillStyle = this.color;
+                nebCtx.beginPath();
+                nebCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                nebCtx.fill();
+            }
+        }
+
+        function populateNebula() {
+            nebParticles = [];
+            const count = Math.min(200, Math.floor((nebCanvas.width * nebCanvas.height) / 4500));
+            for (let i = 0; i < count; i++) {
+                nebParticles.push(new NebulaStar());
+            }
+        }
+
+        function animateNebula() {
+            nebCtx.fillStyle = 'rgba(6, 7, 10, 0.08)';
+            nebCtx.fillRect(0, 0, nebCanvas.width, nebCanvas.height);
+            
+            nebParticles.forEach(star => {
+                star.update();
+                star.draw();
+            });
+            requestAnimationFrame(animateNebula);
+        }
+
+        window.addEventListener('resize', () => {
+            initNebula();
+            populateNebula();
+        });
+
+        // Initialize on load
+        setTimeout(() => {
+            initNebula();
+            populateNebula();
+            animateNebula();
+        }, 100);
+
+
+        // --- Nebula Data Chain Interaction Logic ---
+        const chainNodeData = {
+            s3: {
+                title: "ESP32-S3 Edge Sensing Node (边缘端传感器与执行节点)",
+                icon: "fa-solid fa-microchip",
+                color: "var(--primary)",
+                meta: "Protocol: ESP-NOW (2.4GHz) | Sampling: 100Hz",
+                text: "ESP32-S3 下位机节点部署多维气味传感器阵列，进行高频采样。节点在芯片内部执行 <strong>TensorFlow Lite Micro 轻量级小模型</strong>，在毫秒级时间内进行气体分类并输出食品新鲜度评分 (0-100)。当新鲜度触底时，S3 节点将自动触发本地硬件控制环路（开启消杀灯、风扇通风、关闭舱门），实施第一道主动避险防护。"
+            },
+            c6: {
+                title: "ESP32-C6 Network Co-Processor (网桥与转译协处理器)",
+                icon: "fa-solid fa-network-wired",
+                color: "var(--primary)",
+                meta: "Interface: SDIO (ESP-Hosted) & UART (ESP-NOW Bridge)",
+                text: "ESP32-C6 扮演网关的网络前哨。一方面，它利用 Wi-Fi 6 桥接公网，通过高速 SDIO 接口为 P4 提供高速 Internet 链路；另一方面，它完全弃用蓝牙 BLE，利用 2.4GHz <strong>ESP-NOW 专属链路协议</strong> 拦截下位机 S3 播发的气味 JSON 报文，学习并缓存配对地址后，通过串口 UART1 透传给 P4。"
+            },
+            p4: {
+                title: "ESP32-P4 Intelligent Gateway Hub (中央智能显示网关)",
+                icon: "fa-solid fa-cubes",
+                color: "var(--primary)",
+                meta: "Display: MIPI-DSI & LVGL v9 | Camera: SC2336 MIPI-CSI",
+                text: "ESP32-P4 是系统的处理核心。双核 240MHz RISC-V 强劲算力保证了 LVGL v9 看板的高刷渲染。P4 实时读取 C6 的串口报文，刷新 UI 界面并以 1Hz 频率向云端同步状态；同时支持摄像头扫码配对。当用户触发“AI 深度分析”时，P4 会将当前历史气味数据打包并向云端 API 大模型发起调用请求。"
+            },
+            cloud: {
+                title: "Cloud Server & Volcano Doubao LLM (云服务与火山豆包大模型)",
+                icon: "fa-solid fa-cloud-bolt",
+                color: "var(--accent-blue)",
+                meta: "API: Volcano Engine Doubao LLM | Protocol: WebSocket & HTTP",
+                text: "云端接收 P4 报文后，在用户交互时调用 <strong>火山引擎“豆包”大语言模型</strong> 进行宏观诊断（如预测微生物繁衍、剩余保鲜天数、物流调度方案）。大模型生成的决策如果需要物理动作（如开启紫外灯消杀、打开舱盖），云端服务器会下发指令给网关 P4，P4 通过 C6 桥接无线下达，覆盖并干预下位机 S3 的动作。"
+            }
+        };
+
+        const chainNodes = document.querySelectorAll('.chain-node');
+        const detailIcon = document.getElementById('detail-icon');
+        const detailTitle = document.getElementById('detail-title');
+        const detailDesc = document.getElementById('detail-desc');
+        const detailMeta = document.getElementById('detail-meta');
+
+        chainNodes.forEach(node => {
+            node.addEventListener('click', () => {
+                const nodeKey = node.getAttribute('data-node');
+                const data = chainNodeData[nodeKey];
+                
+                if (!data) return;
+
+                // Toggle active state
+                chainNodes.forEach(n => n.classList.remove('active'));
+                node.classList.add('active');
+
+                // Update detail text with smooth animation fade
+                const detailPanel = document.getElementById('chain-detail');
+                detailPanel.style.opacity = 0.5;
+                detailPanel.style.transform = 'translateY(5px)';
+                
+                setTimeout(() => {
+                    detailIcon.innerHTML = `<i class="${data.icon}"></i>`;
+                    detailIcon.style.color = data.color;
+                    detailTitle.innerText = data.title;
+                    detailDesc.innerHTML = data.text;
+                    detailMeta.innerText = data.meta;
+                    detailMeta.style.color = data.color;
+                    detailMeta.style.borderColor = data.color;
+                    detailMeta.style.background = data.color === 'var(--primary)' ? 'rgba(255, 106, 0, 0.1)' : 'rgba(0, 240, 255, 0.1)';
+                    
+                    detailPanel.style.opacity = 1;
+                    detailPanel.style.transform = 'translateY(0)';
+                }, 200);
+            });
+        });
+
+        // --- 2. Lando Norris Spotlight Reveal Logic with Fluid Lerp, Toggle, and Irregular Displacement ---
+        const spotlightContainer = document.getElementById('spotlight-container');
+        const revealImg = document.getElementById('reveal-img');
+        const spotlightRing = document.getElementById('spotlight-ring');
+        const btnToggleLayers = document.getElementById('btn-toggle-layers');
+        const labelLeft = document.getElementById('label-left');
+        const labelRight = document.getElementById('label-right');
+        const maskRect = document.querySelector('#liquid-mask rect');
+
+        // Lerp (Linear Interpolation) coordinates for fluid inertia
+        let targetX = -1000;
+        let targetY = -1000;
+        let currentX = -1000;
+        let currentY = -1000;
+        let isHovered = false;
+        let isSwapped = false;
+
+        function updateFluidSpotlight() {
+            if (isHovered) {
+                // Lerp factor 0.08 for smooth, fluid fluid-lag inertia
+                currentX += (targetX - currentX) * 0.08;
+                currentY += (targetY - currentY) * 0.08;
+
+                // Update SVG mask rect attributes (centering the 520x360 rect by offsetting half width/height)
+                if (maskRect) {
+                    maskRect.setAttribute('x', currentX - 260);
+                    maskRect.setAttribute('y', currentY - 180);
+                }
+
+                // Translate scanning ring (aligns with the 520x360 size)
+                spotlightRing.style.setProperty('--ring-x', `${currentX - 260}px`);
+                spotlightRing.style.setProperty('--ring-y', `${currentY - 180}px`);
+            }
+            requestAnimationFrame(updateFluidSpotlight);
+        }
+
+        // Start render loop
+        updateFluidSpotlight();
+
+        // Dynamically animate the SVG filter's seed to create waving/rippling fluid motion
+        const feTurbulence = document.querySelector('#fluid-displace feTurbulence');
+        let seedCounter = 0;
+        
+        function animateFilterSeed() {
+            seedCounter += 0.15; // Speed of liquid ripples
+            if (feTurbulence) {
+                feTurbulence.setAttribute('seed', Math.floor(seedCounter % 100));
+            }
+            requestAnimationFrame(animateFilterSeed);
+        }
+        animateFilterSeed();
+
+        const handleMove = (clientX, clientY) => {
+            const rect = spotlightContainer.getBoundingClientRect();
+            targetX = clientX - rect.left;
+            targetY = clientY - rect.top;
+            isHovered = true;
+        };
+
+        // Desktop mouse tracking
+        spotlightContainer.addEventListener('mousemove', (e) => {
+            handleMove(e.clientX, e.clientY);
+        });
+
+        // Mobile touch tracking
+        spotlightContainer.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 0) {
+                handleMove(e.touches[0].clientX, e.touches[0].clientY);
+                e.preventDefault();
+            }
+        });
+
+        const handleLeave = () => {
+            isHovered = false;
+            targetX = -1000;
+            targetY = -1000;
+            if (maskRect) {
+                maskRect.setAttribute('x', -1000);
+                maskRect.setAttribute('y', -1000);
+            }
+            spotlightRing.style.setProperty('--ring-x', `-1000px`);
+            spotlightRing.style.setProperty('--ring-y', `-1000px`);
+        };
+
+        spotlightContainer.addEventListener('mouseleave', handleLeave);
+        spotlightContainer.addEventListener('touchend', handleLeave);
+
+        // Toggle Layer Relationship / 切换底图与透镜上下关系
+        btnToggleLayers.addEventListener('click', (e) => {
+            e.stopPropagation(); // Avoid triggering container hover resets
+            isSwapped = !isSwapped;
+            
+            const baseImgEl = document.getElementById('base-svg-img');
+            const revealImgEl = document.getElementById('reveal-svg-img');
+            
+            if (isSwapped) {
+                spotlightContainer.classList.add('swapped');
+                if (baseImgEl) baseImgEl.setAttribute('href', './image1.jpg');
+                if (revealImgEl) revealImgEl.setAttribute('href', './image2.jpg');
+                labelLeft.innerText = "背景：实机渲染图";
+                labelRight.innerText = "透镜：设计手稿蓝图";
+                spotlightRing.style.borderColor = "var(--accent-blue)";
+                spotlightRing.style.boxShadow = "0 0 35px rgba(0, 240, 255, 0.4), inset 0 0 20px rgba(0, 240, 255, 0.4)";
+            } else {
+                spotlightContainer.classList.remove('swapped');
+                if (baseImgEl) baseImgEl.setAttribute('href', './image2.jpg');
+                if (revealImgEl) revealImgEl.setAttribute('href', './image1.jpg');
+                labelLeft.innerText = "背景：设计手稿蓝图";
+                labelRight.innerText = "透镜：实机渲染图";
+                spotlightRing.style.borderColor = "var(--primary)";
+                spotlightRing.style.boxShadow = "0 0 35px var(--primary-glow), inset 0 0 20px var(--primary-glow)";
+            }
+        });
+
+
+        // --- 3. 3D Card Hover Tilt Effect ---
+        const cards = document.querySelectorAll('.tilt-card');
+        
+        cards.forEach(card => {
+            card.addEventListener('mousemove', (e) => {
+                const rect = card.getBoundingClientRect();
+                const x = e.clientX - rect.left; // x position within element
+                const y = e.clientY - rect.top;  // y position within element
+                
+                // Set CSS variables for spotlight glow effect
+                card.style.setProperty('--mouse-x', `${x}px`);
+                card.style.setProperty('--mouse-y', `${y}px`);
+                
+                // Calculate Tilt Angles (Max tilt 15deg)
+                const centerX = rect.width / 2;
+                const centerY = rect.height / 2;
+                const rotateX = ((centerY - y) / centerY) * 12; // tilt vertically
+                const rotateY = ((x - centerX) / centerX) * 12; // tilt horizontally
+                
+                card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`;
+            });
+            
+            card.addEventListener('mouseleave', () => {
+                card.style.transform = `perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)`;
+            });
+        });
+
+        // --- 4. Scroll Reveal Animations (Intersection Observer) ---
+        const revealElements = document.querySelectorAll('.reveal');
+        
+        const revealObserver = new IntersectionObserver((entries, observer) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('active');
+                    observer.unobserve(entry.target); // Trigger only once
+                }
+            });
+        }, {
+            threshold: 0.15
+        });
+        
+        revealElements.forEach(el => {
+            revealObserver.observe(el);
+        });
+    </script>
+</body>
+</html>
